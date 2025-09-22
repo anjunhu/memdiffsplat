@@ -1,14 +1,37 @@
 from PIL.Image import Image as PILImage
 from torch import Tensor
 
+from dataclasses import dataclass
 import PIL.Image
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from einops import rearrange, repeat
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import *
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion_img2img import *
-
+from diffusers.utils import BaseOutput
 from extensions.diffusers_diffsplat import UNetMV2DConditionModel
+from memorization.controller import AttentionStore, register_attention_control, unregister_attention_control
+
+@dataclass
+class StableDiffusionPipelineExtraOutput(BaseOutput):
+    """
+    Output class for Stable Diffusion pipelines.
+
+    Args:
+        images (`List[PIL.Image.Image]` or `np.ndarray`)
+            List of denoised PIL images of length `batch_size` or NumPy array of shape `(batch_size, height, width,
+            num_channels)`.
+        nsfw_content_detected (`List[bool]`)
+            List indicating whether the corresponding generated image contains "not-safe-for-work" (nsfw) content or
+            `None` if safety checking could not be performed.
+    """
+    images: Union[List[PIL.Image.Image], np.ndarray]
+    nsfw_content_detected: Optional[List[bool]]
+    noise_diffs: list
+    uncond_noise: list
+    text_noise: list
+    x_inter: list
+    timesteps: list
 
 
 # Copied from https://github.com/camenduru/GRM/blob/master/third_party/generative_models/instant3d.py
@@ -248,6 +271,8 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
             Union[Callable[[int, int, Dict], None], PipelineCallback, MultiPipelineCallbacks]
         ] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        ############## TODO: For BE and CAE Evaluation!
+        attention_controller: Optional[Any] = None,
         **kwargs,
     ):
         callback = kwargs.pop("callback", None)
@@ -448,11 +473,43 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
 
             self._guidance_scale = guidance_scale
 
+        # --- ATTENTION CONTROLLER SETUP ---
+        hook_handles = []
+        if attention_controller is not None:
+            try:
+                # Pass pipeline resolution to controller if it hasn't been set
+                if hasattr(attention_controller, 'input_height') and hasattr(attention_controller, 'input_width'):
+                    if attention_controller.input_height == attention_controller.input_width == 512:
+                        # Controller using default resolution, update it
+                        attention_controller.input_height = height
+                        attention_controller.input_width = width
+                        attention_controller.expected_resolutions = attention_controller._calculate_expected_resolutions()
+                
+                hook_handles = register_attention_control(self, attention_controller)
+            except ValueError as e:
+                print(f"Could not register attention controller: {e}")
+
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
         self._num_timesteps = len(timesteps)
+        intermediate_noise_diffs = []
+        intermediate_noise_diffs = []
+        intermediate_uncond_noise = []
+        intermediate_text_noise = []
+        intermediate_x_inter = []
+        intermediate_timesteps = []
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
+                # print(t)
+                if attention_controller is not None:
+                    attention_controller.set_timestep(t.item() if hasattr(t, 'item') else t)
+
+
+                if isinstance(t, torch.Tensor):
+                    intermediate_timesteps.append(t.detach().cpu().clone())
+                else:
+                    intermediate_timesteps.append(torch.tensor(t))
+
                 if self.interrupt:
                     continue
 
@@ -501,6 +558,11 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    # the metric!!!!
+                    noise_diff = noise_pred_text - noise_pred_uncond
+                    intermediate_noise_diffs.append(noise_diff.detach())
+                    intermediate_uncond_noise.append(noise_pred_uncond.detach().cpu().clone())
+                    intermediate_text_noise.append(noise_pred_text.detach().cpu().clone()) 
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
                     # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
@@ -508,6 +570,11 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
 
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
+                intermediate_x_inter.append(latents.detach().cpu().clone())
+
+                # --- INCREMENT TIMESTEP COUNTER AFTER PROCESSING ---
+                if attention_controller is not None:
+                    attention_controller.increment_timestep()
 
                 if callback_on_step_end is not None:
                     callback_kwargs = {}
@@ -529,6 +596,10 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
                 if XLA_AVAILABLE:
                     xm.mark_step()
 
+        
+        if hook_handles:
+            unregister_attention_control(hook_handles)
+                
         if not output_type == "latent":
             image = self.vae.decode(latents / self.vae.config.scaling_factor, return_dict=False, generator=generator)[
                 0
@@ -551,4 +622,8 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
         if not return_dict:
             return (image, has_nsfw_concept)
 
-        return StableDiffusionPipelineOutput(images=image, nsfw_content_detected=has_nsfw_concept)
+        return StableDiffusionPipelineExtraOutput(images=image, nsfw_content_detected=has_nsfw_concept, noise_diffs=intermediate_noise_diffs,
+                                                uncond_noise=intermediate_uncond_noise,
+                                                text_noise=intermediate_text_noise,
+                                                x_inter=intermediate_x_inter,
+                                                timesteps=intermediate_timesteps)

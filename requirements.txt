@@ -1,0 +1,4 @@
+kiui
+lpips
+plyfile
+git+https://github.com/THUDM/ImageReward.git

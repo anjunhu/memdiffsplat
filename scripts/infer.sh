@@ -4,8 +4,8 @@ TAG=$3
 shift 3  # remove $1~$3 for $@
 
 # export HF_ENDPOINT=https://hf-mirror.com
-export HF_HOME=~/.cache/huggingface
-export TORCH_HOME=~/.cache/torch
+export HF_HOME=/bigssd2/anjun/hf/cache
+export TORCH_HOME=/bigssd2/anjun/cache
 export NCCL_DEBUG=VERSION
 
 python3 ${FILE} \

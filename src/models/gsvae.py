@@ -1,6 +1,6 @@
 from typing import *
 from torch import Tensor
-from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
+# from diffusers.models.autoencoders.vae import DiagonalGaussianDistribution
 from lpips import LPIPS
 from src.models.gsrecon import GSRecon
 
@@ -17,6 +17,22 @@ from diffusers.models.autoencoders.autoencoder_tiny import DecoderTiny
 from src.options import Options
 
 
+class DiagonalGaussianDistribution:
+    def __init__(self, parameters):
+        self.mean, self.logvar = torch.chunk(parameters, 2, dim=1)
+        self.std = torch.exp(0.5 * self.logvar)
+        self.var = torch.exp(self.logvar)
+        self.parameters = parameters
+
+    def sample(self):
+        noise = torch.randn_like(self.mean)
+        return self.mean + self.std * noise
+
+    def kl(self):
+        return 0.5 * torch.sum(
+            torch.pow(self.mean, 2) + self.var - 1.0 - self.logvar, dim=1
+        )
+    
 TAE_DICT = {
     "stable-diffusion-v1-5/stable-diffusion-v1-5": "madebyollin/taesd",
     "stabilityai/stable-diffusion-2-1": "madebyollin/taesd",
