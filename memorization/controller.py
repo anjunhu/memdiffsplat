@@ -224,11 +224,11 @@ class AttentionStore:
     def set_timestep(self, timestep):
         self.current_timestep = timestep
         self.attention_store[timestep] = {}
-        print(f"[AttentionStore] Set timestep: {timestep}")
+        # print(f"[AttentionStore] Set timestep: {timestep}")
         
     def increment_timestep(self):
         self.timestep_counter += 1
-        print(f"[AttentionStore] Incremented to step: {self.timestep_counter}")
+        # print(f"[AttentionStore] Incremented to step: {self.timestep_counter}")
 
     def store_attention(self, layer_name: str, attention_probs: torch.Tensor):
         # Decide the storage key

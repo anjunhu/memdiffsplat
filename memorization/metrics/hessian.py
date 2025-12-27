@@ -1,9 +1,17 @@
+# DiffSplat/memorization/metrics/hessian.py
+
 import torch
 import torch.nn.functional as F
-from typing import Dict
+from typing import Dict, List
 from .base import BaseMetric
 
 class HessianMetric(BaseMetric):
+
+    def __init__(self, timesteps_to_measure: List[int]=None):
+        super().__init__()
+        if timesteps_to_measure is not None:
+            self.timesteps_to_measure = list(timesteps_to_measure)
+
     @property
     def name(self) -> str:
         return "Hessian_SAIL_Metric"
@@ -126,9 +134,9 @@ class HessianMetric(BaseMetric):
         if conditioning_context is None or unconditioning_context is None:
             raise ValueError("HessianMetric requires conditioning and unconditioning contexts")
 
-        # Extract context embeddings from the context dicts
-        cond_embeds = conditioning_context["context"]
-        uncond_embeds = unconditioning_context["context"]
+        # Extract context embeddings (accept dicts with 'context' or raw tensors)
+        cond_embeds = conditioning_context["context"] if isinstance(conditioning_context, dict) else conditioning_context
+        uncond_embeds = unconditioning_context["context"] if isinstance(unconditioning_context, dict) else unconditioning_context
 
         # --- Helper to get individual score functions for DiffSplat UNet ---
         def get_cond_score(x_t, t):
@@ -144,9 +152,10 @@ class HessianMetric(BaseMetric):
             return model(prepared_input, t, encoder_hidden_states=prepared_embeds).sample
 
         results = {}
-        steps_to_analyze = {"t50": 0, "t1": -1, "t20": -20} 
+        timesteps_to_measure = {"t50": 0, "t1": -1, "t20": -10} 
+        timesteps_to_measure = {f"t{20 - i}": i for i in range(20)}
 
-        for name, t_index in steps_to_analyze.items():
+        for name, t_index in timesteps_to_measure.items():
             if abs(t_index) > len(intermediates['x_inter']):
                 continue
 
@@ -212,8 +221,9 @@ class HessianMetric(BaseMetric):
              h_s_cond_t1 = torch.tensor(results['t1']['cond_magnitudes'])
              h_s_uncond_t1 = torch.tensor(results['t1']['uncond_magnitudes'])
              final_metric_val = torch.sum((h_s_cond_t1 - h_s_uncond_t1)**2).item()
-
+             
+        print(f"[HessianMetric] hessian_sail_norm {final_metric_val}")
         return {
             "hessian_sail_norm": final_metric_val,
-            "visualizations": results
+            "visualizations": results,
         }

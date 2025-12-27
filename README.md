@@ -1,6 +1,7 @@
 ### Memorization Evaluation
-python infer_gsdiff_sd.py
-python infer_gsdiff_sd_cap3d.py
+```
+python run_baseline.py --include_hessian
+```
 
 ### Download Pretrained Models
 

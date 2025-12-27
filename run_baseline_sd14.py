@@ -1,4 +1,4 @@
-# DiffSplat/run_baseline.py - Updated for DiffSplat attention controller
+# DiffSplat/run_baseline_sd14.py 
 
 import os
 import sys

@@ -171,8 +171,8 @@ class DiversityMetric(BaseMetric):
                 else:
                     results["ssim_noise_diff"] = 0.0
             except Exception as e:
-                print(f"Warning: Could not compute SSIM of noise differences: {e}")
-                results["ssim_noise_diff"] = 0.0
+                print(f"[DiversityMetric] Warning: Could not compute SSIM of noise differences: {e}")
+                raise e
         else:
             results["ssim_noise_diff"] = 0.0
 

@@ -199,7 +199,7 @@ class LaionMemorizedDataset(PromptDataset):
                 memorized_df = memorized_df.head(max_clusters)
             
             prompts = memorized_df['Caption'].tolist()
-            labels = ['memorized'] * len(prompts)
+            labels = ['unmemorized'] * len(prompts)
             # Use Index as cluster_id if available, otherwise use row index
             if 'Index' in memorized_df.columns:
                 cluster_ids = memorized_df['Index'].astype(str).tolist()
