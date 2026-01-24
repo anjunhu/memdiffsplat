@@ -35,7 +35,8 @@ from memorization.data.dataloaders import DatasetManager
 from memorization.evaluation.evaluator import DiffSplatEvaluator, save_run_outputs, multiview_tensor_to_images
 from memorization.metrics import (
     NoiseDiffNormMetric, HessianMetric,
-    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric
+    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric,
+    InvMMMetric, PLaplaceMetric
 )
 # --- CORRECTED IMPORTS ---
 from memorization.controller import AttentionStore
@@ -398,12 +399,10 @@ def main(cfg):
         BrightEndingMetric(), 
         XAttnEntropyMetric(),
         HessianMetric(),
+        InvMMMetric(),
+        PLaplaceMetric(),
     ]
     
-    # # Add Hessian metrics only if explicitly requested (they are expensive)
-    # if cfg.get('include_hessian', False):
-    #     per_seed_metrics.append(HessianMetric())
-        
     if cfg.get('include_slow_hessian', False):
         per_seed_metrics.append(HessianMetricSlow())
     
@@ -664,7 +663,6 @@ if __name__ == "__main__":
     parser.add_argument("--use_wandb", action="store_true", help="Enable Weights & Biases logging.")
     parser.add_argument("--num_seeds", type=int, default=4, help="Number of seeds to run per prompt.")
     parser.add_argument("--num_views", type=int, default=4, help="Number of camera views to render.")
-    parser.add_argument("--include_hessian", action="store_true", help="Include fast Hessian computation.")
     
     args = parser.parse_args()
     
@@ -678,7 +676,6 @@ if __name__ == "__main__":
     cfg.use_wandb = args.use_wandb
     cfg.num_seeds = args.num_seeds
     cfg.num_views = args.num_views
-    cfg.include_hessian = args.include_hessian
     cfg.config_file = args.config
     cfg.scheduler_type = getattr(cfg, 'scheduler_type', 'sde-dpmsolver++')
     cfg.half_precision = getattr(cfg, 'half_precision', False)

@@ -1,6 +1,7 @@
 ### Memorization Evaluation
 ```
-python run_baseline.py --include_hessian
+wget https://huggingface.co/datasets/tiange/Cap3D/resolve/main/Cap3D_automated_Objaverse_full.csv
+python run_baseline.py
 ```
 
 ### Download Pretrained Models

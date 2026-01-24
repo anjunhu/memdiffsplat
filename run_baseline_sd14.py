@@ -35,7 +35,8 @@ from memorization.data.dataloaders import DatasetManager
 from memorization.evaluation.evaluator import DiffSplatEvaluator, save_run_outputs, multiview_tensor_to_images
 from memorization.metrics import (
     NoiseDiffNormMetric, HessianMetric,
-    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric
+    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric,
+    InvMMMetric, PLaplaceMetric
 )
 # --- CORRECTED IMPORTS ---
 from memorization.controller import AttentionStore
@@ -399,6 +400,13 @@ def main(cfg):
         XAttnEntropyMetric(),
         HessianMetric(),
     ]
+    
+    # Add new metrics if requested
+    if cfg.get('include_invmm', False):
+        per_seed_metrics.append(InvMMMetric())
+    
+    if cfg.get('include_plaplace', False):
+        per_seed_metrics.append(PLaplaceMetric())
     
     # # Add Hessian metrics only if explicitly requested (they are expensive)
     # if cfg.get('include_hessian', False):

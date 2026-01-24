@@ -2,3 +2,6 @@ kiui
 lpips
 plyfile
 git+https://github.com/THUDM/ImageReward.git
+scikit-image
+diffusers==0.32
+transformers==4.38.0

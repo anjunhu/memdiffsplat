@@ -13,7 +13,8 @@ from einops import rearrange
 # Ensure all metric classes are imported
 from ..metrics import (
     NoiseDiffNormMetric, HessianMetric,
-    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric
+    DiversityMetric, BrightEndingMetric, XAttnEntropyMetric,
+    InvMMMetric, PLaplaceMetric
 )
 
 # Setup logging

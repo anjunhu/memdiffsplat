@@ -1,4 +1,4 @@
-# Updated base.py - Add properties for metric requirements
+# DiffSplat/memorization/metrics/base.py 
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any
