@@ -52,18 +52,50 @@ class InvMMMetric(BaseMetric):
         """
         Measures memorization by inverting generated images back to latent space.
         
+        NOTE: This metric is designed for standard diffusion models that generate images directly.
+        For DiffSplat (3D Gaussian Splatting), this metric may not be applicable since:
+        - DiffSplat generates 3D Gaussians, not images directly
+        - Images are rendered from Gaussians, not decoded from latents
+        - The inversion process doesn't match DiffSplat's architecture
+        
         Args:
             model: The DiffSplat pipeline model
             images: Generated images tensor [B, C, H, W] or [B, V, C, H, W] for multi-view
             
         Returns:
-            Dict with InvMM score and related metrics
+            Dict with InvMM score and related metrics, or skip message for DiffSplat
         """
         if model is None:
             return {"error": "InvMMMetric requires model"}
         
         if images is None:
             return {"error": "InvMMMetric requires generated images"}
+        
+        # Check if this is a DiffSplat model (has gsvae/gsrecon)
+        is_diffsplat = (hasattr(model, 'gsvae') or hasattr(model, 'gsrecon') or 
+                       'DiffSplat' in model.__class__.__name__ or
+                       'StableMVDiffusion' in model.__class__.__name__)
+        
+        if is_diffsplat:
+            return {
+                "skipped": True,
+                "reason": "InvMMMetric not applicable to DiffSplat architecture",
+                "note": "DiffSplat generates 3D Gaussians, not image latents directly"
+            }
+        
+        # For standard diffusion models, try to find VAE
+        vae = None
+        if hasattr(model, 'vae'):
+            vae = model.vae
+        elif hasattr(model, 'first_stage_model'):
+            vae = model.first_stage_model
+        
+        if vae is None:
+            return {
+                "skipped": True,
+                "reason": "Cannot find VAE in model",
+                "note": "InvMMMetric requires VAE for image encoding"
+            }
         
         # Handle multi-view images - process all views
         is_multiview = len(images.shape) == 5  # [B, V, C, H, W]
@@ -80,7 +112,7 @@ class InvMMMetric(BaseMetric):
         
         # Initialize SSCD similarity model for evaluation
         try:
-            sscd_model = torch.jit.load("models/sscd/sscd_disc_large.torchscript.pt")
+            sscd_model = torch.jit.load("sscd_disc_mixup.torchscript.pt")
             sscd_model.to(device)
             sscd_model.eval()
             
@@ -90,9 +122,10 @@ class InvMMMetric(BaseMetric):
                 T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
             ])
         except:
-            print("[InvMMMetric] Warning: SSCD model not found, using L2 similarity")
-            sscd_model = None
-            sscd_transforms = None
+            raise Exception
+            # ("[InvMMMetric] Warning: SSCD model not found, using L2 similarity")
+            # sscd_model = None
+            # sscd_transforms = None
         
         invmm_scores = []
         
@@ -101,11 +134,26 @@ class InvMMMetric(BaseMetric):
             
             try:
                 # Encode image to latent space
-                if hasattr(model, 'vae') and hasattr(model.vae, 'encode'):
-                    # SD-style VAE encoding
-                    encoder_posterior = model.vae.encode(img * 2 - 1)
+                # Handle different pipeline types
+                vae = None
+                if hasattr(model, 'vae'):
+                    vae = model.vae
+                elif hasattr(model, 'first_stage_model'):
+                    vae = model.first_stage_model
+                
+                if vae is None:
+                    print(f"[InvMMMetric] Warning: Cannot find VAE in model, skipping image {i}")
+                    continue
+                
+                # Encode with VAE
+                if hasattr(vae, 'encode'):
+                    # Normalize image to [-1, 1] range expected by VAE
+                    img_normalized = img * 2 - 1
+                    encoder_posterior = vae.encode(img_normalized)
                     if hasattr(encoder_posterior, 'sample'):
                         z_target = encoder_posterior.sample()
+                    elif hasattr(encoder_posterior, 'latent_dist'):
+                        z_target = encoder_posterior.latent_dist.sample()
                     else:
                         z_target = encoder_posterior
                 elif hasattr(model, 'encode_first_stage'):

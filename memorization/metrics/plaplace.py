@@ -12,17 +12,22 @@ class PLaplaceMetric(BaseMetric):
     """
     p-Laplace Memorization Metric for DiffSplat.
     
-    Replicates the core logic from /home/ubuntu/pLaplace by:
+    Replicates the core logic from /home/ubuntu/metrics/pLaplace by:
     1. Computing p-Laplace operator at latent points using boundary flux method
     2. Sampling sphere directions around latent centers
-    3. Evaluating gradient of log p (score function) at boundary points
-    4. Computing divergence measure as memorization indicator
+    3. Evaluating score function (∇ log p) at boundary points - this is directly
+       the negative noise prediction from the diffusion model, NOT computed via autograd
+    4. Computing flux through boundary as memorization indicator
+    
+    Key insight: The score function for diffusion models is the noise prediction
+    (up to sign and scaling). No autograd or finite differences needed for the score -
+    we just evaluate the UNet directly.
     
     Adapted for DiffSplat's multi-view 3D Gaussian Splatting pipeline.
     """
     
     def __init__(self, 
-                 p: float = 2.0,
+                 p: float = 1.0,
                  radius_factor: float = 0.1,
                  n_samples: int = 128,
                  timesteps_to_measure: Optional[list] = None):
@@ -53,6 +58,8 @@ class PLaplaceMetric(BaseMetric):
                 unconditioning_context = None, latents = None, **kwargs) -> Dict:
         """
         Measures memorization using p-Laplace analysis at latent points.
+        
+        No gradients needed - the score function is directly the UNet output.
         
         Args:
             model: The DiffSplat UNet model
@@ -150,7 +157,13 @@ class PLaplaceMetric(BaseMetric):
     
     def _compute_score_gradients(self, model, points, timestep, cond_context, uncond_context):
         """
-        Compute score function gradients (∇ log p) at given points.
+        Compute score function (∇ log p) at given points.
+        
+        For diffusion models, the score function is directly related to the noise prediction:
+            score = -noise_pred / σ(t)
+        
+        This does NOT use autograd or finite differences - the score is the direct output 
+        of the denoising network, matching the approach in /home/ubuntu/metrics/pLaplace.
         
         Args:
             model: UNet model
@@ -160,67 +173,97 @@ class PLaplaceMetric(BaseMetric):
             uncond_context: Unconditional context
             
         Returns:
-            Gradients of same shape as points
+            Score (gradient of log p) of same shape as points
+        """
+        return self._compute_score_at_points(model, points, timestep, cond_context, uncond_context)
+    
+    def _compute_score_at_points(self, model, points, timestep, cond_context, uncond_context):
+        """
+        Compute the score function (negative noise prediction) at given points.
+        
+        Args:
+            model: UNet model
+            points: Tensor of shape [N, C, H, W]
+            timestep: Diffusion timestep
+            cond_context: Conditional context
+            uncond_context: Unconditional context
+            
+        Returns:
+            Score tensor of shape [N, C, H, W]
         """
         n_points = points.shape[0]
         device = points.device
+        original_channels = points.shape[1]
         
         # Prepare timestep tensor
         t = torch.full((n_points,), timestep, device=device, dtype=torch.long)
         
-        # Enable gradients for input points
-        points_with_grad = points.clone().detach().requires_grad_(True)
+        # Prepare contexts for CFG
+        if cond_context.shape[0] == 1:
+            cond_context_expanded = cond_context.expand(n_points, -1, -1)
+        else:
+            cond_context_expanded = cond_context
+        if uncond_context.shape[0] == 1:
+            uncond_context_expanded = uncond_context.expand(n_points, -1, -1)
+        else:
+            uncond_context_expanded = uncond_context
         
-        try:
-            # Prepare contexts for CFG
-            if cond_context.shape[0] == 1:
-                cond_context = cond_context.expand(n_points, -1, -1)
-            if uncond_context.shape[0] == 1:
-                uncond_context = uncond_context.expand(n_points, -1, -1)
-            
-            # Concatenate for CFG
-            context = torch.cat([uncond_context, cond_context], dim=0)
-            points_cfg = torch.cat([points_with_grad, points_with_grad], dim=0)
-            t_cfg = torch.cat([t, t], dim=0)
-            
-            # Forward pass through UNet
+        # Check if model expects additional input channels
+        expected_in_channels = None
+        if hasattr(model, 'config') and hasattr(model.config, 'in_channels'):
+            expected_in_channels = model.config.in_channels
+        elif hasattr(model, 'in_channels'):
+            expected_in_channels = model.in_channels
+        
+        # Pad if necessary
+        if expected_in_channels and points.shape[1] < expected_in_channels:
+            padding_channels = expected_in_channels - points.shape[1]
+            padding = torch.zeros(
+                points.shape[0], padding_channels, 
+                points.shape[2], points.shape[3],
+                device=device, dtype=points.dtype
+            )
+            points_padded = torch.cat([points, padding], dim=1)
+        else:
+            points_padded = points
+        
+        # Concatenate for CFG
+        context = torch.cat([uncond_context_expanded, cond_context_expanded], dim=0)
+        points_cfg = torch.cat([points_padded, points_padded], dim=0)
+        t_cfg = torch.cat([t, t], dim=0)
+        
+        # Forward pass through UNet
+        with torch.no_grad():
             if hasattr(model, 'unet'):
-                # Diffusers-style
-                noise_pred = model.unet(points_cfg, t_cfg, context).sample
+                output = model.unet(points_cfg, t_cfg, encoder_hidden_states=context)
+                if hasattr(output, 'sample'):
+                    noise_pred = output.sample
+                else:
+                    noise_pred = output
             elif hasattr(model, 'model'):
-                # LDM-style
                 noise_pred = model.model(points_cfg, t_cfg, context)
             else:
-                # Direct UNet call
-                noise_pred = model(points_cfg, t_cfg, context)
+                output = model(points_cfg, t_cfg, encoder_hidden_states=context)
+                if hasattr(output, 'sample'):
+                    noise_pred = output.sample
+                else:
+                    noise_pred = output
             
             # Split CFG predictions
             noise_pred_uncond, noise_pred_cond = noise_pred.chunk(2)
             
-            # Apply CFG (guidance scale = 7.5 is common)
+            # Apply CFG
             guidance_scale = 7.5
             noise_pred_guided = noise_pred_uncond + guidance_scale * (noise_pred_cond - noise_pred_uncond)
             
-            # Compute score: ∇ log p = -noise_pred / σ(t)
-            # For simplicity, assume σ(t) = 1 (can be refined with actual noise schedule)
+            # Only keep original channels
+            if noise_pred_guided.shape[1] > original_channels:
+                noise_pred_guided = noise_pred_guided[:, :original_channels]
+            
+            # Score = -noise_pred
             score = -noise_pred_guided
-            
-            # Compute gradients of score w.r.t. input points
-            # This gives us the Hessian-like information we need
-            score_sum = score.sum()
-            gradients = torch.autograd.grad(
-                outputs=score_sum,
-                inputs=points_with_grad,
-                create_graph=False,
-                retain_graph=False
-            )[0]
-            
-            return gradients.detach()
-            
-        except Exception as e:
-            print(f"[PLaplaceMetric] Error computing gradients: {e}")
-            # Return zero gradients as fallback
-            return torch.zeros_like(points)
+        
+        return score
     
     def _sample_sphere_normals_nd_torch(self, tensor_shape, n_samples=128, device="cuda", epsilon=1e-12):
         """

@@ -156,7 +156,7 @@ def load_diffsplat_models(cfg, device):
         # Try to load using util.load_ckpt logic
         infer_from_iter = util.load_ckpt(
             ckpt_dir,
-            infer_from_iter,
+            cfg.infer_from_iter,
             cfg.get('hdfs_dir'),
             None,  # `None`: not load model ckpt here
         )
@@ -299,81 +299,81 @@ def main(cfg):
 
     # Create dataset manager and load data
     dataset_config = getattr(cfg, 'dataset_config', {
-        # 'laion_memorized': {
-        #     'path': 'data/nemo-prompts/memorized_laion_prompts.csv',  # Update this path
-        #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 500,  # Adjust based on how many prompts you want
-        #     'source_type': 'csv'
-        # }
-        # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-        #     'concept_key': 'teddy_bear',
-        #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
-        # },
-        # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-        #     'concept_key': 'fazbear_',
-        #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
-        # },
-        # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-        #     'concept_key': "backpack",
-        #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
-        # },
+        'laion_memorized': {
+            'path': 'data/nemo-prompts/memorized_laion_prompts.csv',  # Update this path
+            'max_prompts_per_cluster': 10,
+            'max_clusters': 500,  # Adjust based on how many prompts you want
+            'source_type': 'csv'
+        },
+        'cap3d': {
+            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
+            'concept_key': 'teddy_bear',
+            'max_prompts_per_cluster': 10,
+            'max_clusters': 20
+        },
+        'cap3d': {
+            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
+            'concept_key': 'fazbear_',
+            'max_prompts_per_cluster': 10,
+            'max_clusters': 20
+        },
+        'cap3d': {
+            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
+            'concept_key': "backpack",
+            'max_prompts_per_cluster': 10,
+            'max_clusters': 20,
+        },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "kirby_",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "pokemon_",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
-        'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-            'concept_key': "mario_",
-            'max_prompts_per_cluster': 10,
-            'max_clusters': 10
-        },
+        # 'cap3d': {
+        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
+        #     'concept_key': "_",
+        #     'max_prompts_per_cluster': 10,
+        #     'max_clusters': 20,
+        # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "sonic_",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "avocado",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "automatic_washer",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "armchair",
         #     'max_prompts_per_cluster': 10,
-        #     'max_clusters': 10
+        #     'max_clusters': 20,
         # },
     })
     

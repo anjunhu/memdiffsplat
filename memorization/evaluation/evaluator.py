@@ -216,6 +216,21 @@ class DiffSplatEvaluator:
                     kwargs['attention_map_dir'] = attention_map_dir
                     # Also provide captured attention maps directly
                     kwargs['captured_attention_maps'] = captured_attention_maps
+                    # For XAttnEntropyMetric, also pass model and prompt for tokenization
+                    if isinstance(metric, XAttnEntropyMetric):
+                        kwargs['model'] = self.pipeline
+                        kwargs['prompt'] = prompt
+                
+                # Add images for InvMMMetric
+                if isinstance(metric, InvMMMetric):
+                    # InvMMMetric expects images in [B, C, H, W] format
+                    # rendered_images is (V, 3, H, W), add batch dimension
+                    kwargs['images'] = rendered_images.unsqueeze(0)  # (1, V, 3, H, W)
+                
+                # Add latents for PLaplaceMetric
+                if isinstance(metric, PLaplaceMetric):
+                    # PLaplaceMetric needs the latent representation
+                    kwargs['latents'] = latents.unsqueeze(0) if len(latents.shape) == 4 else latents
                 
                 # Legacy support for metrics expecting image tensor
                 if isinstance(metric, BrightEndingMetric):
