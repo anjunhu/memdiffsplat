@@ -7,10 +7,11 @@ from .base import BaseMetric
 
 class HessianMetric(BaseMetric):
 
-    def __init__(self, timesteps_to_measure: List[int]=None):
+    def __init__(self, timesteps_to_measure: List[int]=None, top_k: int = 256):
         super().__init__()
         if timesteps_to_measure is not None:
             self.timesteps_to_measure = list(timesteps_to_measure)
+        self.top_k = top_k
 
     @property
     def name(self) -> str:
@@ -152,8 +153,20 @@ class HessianMetric(BaseMetric):
             return model(prepared_input, t, encoder_hidden_states=prepared_embeds).sample
 
         results = {}
-        timesteps_to_measure = {"t50": 0, "t1": -1, "t20": -10} 
-        timesteps_to_measure = {f"t{20 - i}": i for i in range(20)}
+        
+        # Automatically determine timesteps based on actual inference steps
+        # Use t=T (first step), t=T//2 (middle step), and t=1 (last step)
+        num_steps = len(intermediates['x_inter'])
+        if num_steps > 0:
+            timesteps_to_measure = {
+                f"t{num_steps}": 0,           # t=T (first/noisiest step)
+                f"t{num_steps // 2}": num_steps // 2,  # t=T//2 (middle step)
+                "t1": -1                       # t=1 (last/cleanest step)
+            }
+            print(f"[HessianMetric] Using timesteps for {num_steps} inference steps: {list(timesteps_to_measure.keys())}")
+        else:
+            print("[HessianMetric] No intermediates available")
+            return {"hessian_sail_norm": 0.0, "visualizations": {}}
 
         for name, t_index in timesteps_to_measure.items():
             if abs(t_index) > len(intermediates['x_inter']):
@@ -199,8 +212,8 @@ class HessianMetric(BaseMetric):
                     uncond_magnitudes = h_s_uncond.flatten().abs()
                 
                 results[name] = {
-                    "cond_magnitudes": torch.sort(cond_magnitudes).values.cpu().tolist(),
-                    "uncond_magnitudes": torch.sort(uncond_magnitudes).values.cpu().tolist()
+                    "cond_magnitudes": torch.sort(cond_magnitudes, descending=True).values[:self.top_k].cpu().tolist(),
+                    "uncond_magnitudes": torch.sort(uncond_magnitudes, descending=True).values[:self.top_k].cpu().tolist()
                 }
 
             except Exception as e:

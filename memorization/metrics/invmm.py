@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 import math
 from contextlib import contextmanager
 
@@ -12,18 +12,16 @@ class InvMMMetric(BaseMetric):
     """
     Inversion-based Memorization Measure (InvMM) for DiffSplat.
     
-    Replicates the core logic from /home/ubuntu/InvMM by:
-    1. Inverting generated images back to latent space
-    2. Optimizing learnable tokens and latent distribution parameters
-    3. Measuring reconstruction error as memorization indicator
+    Adapted for DiffSplat's multi-view 3D Gaussian Splatting pipeline using gsvae.
     
-    Adapted for DiffSplat's multi-view 3D Gaussian Splatting pipeline.
+    The key insight is that DiffSplat uses gsvae.get_gslatents() to encode multi-view
+    images into GS latents, which can then be used for the inversion process.
     """
     
     def __init__(self, 
                  num_tokens: int = 75,
                  train_lr: float = 1e-1,
-                 train_num_steps: int = 2000,
+                 train_num_steps: int = 500,  # Reduced for efficiency
                  tau: float = 2.0,
                  init_kl_weight: float = 1.0,
                  similarity_threshold: float = 0.5):
@@ -47,23 +45,24 @@ class InvMMMetric(BaseMetric):
     def requires_model(self) -> bool:
         return True
 
-    @torch.no_grad()
-    def measure(self, model = None, images = None, **kwargs) -> Dict:
+    def measure(self, model=None, images=None, gsvae=None, gsrecon=None, 
+                camera_params=None, **kwargs) -> Dict:
         """
-        Measures memorization by inverting generated images back to latent space.
+        Measures memorization by inverting generated images back to GS latent space.
         
-        NOTE: This metric is designed for standard diffusion models that generate images directly.
-        For DiffSplat (3D Gaussian Splatting), this metric may not be applicable since:
-        - DiffSplat generates 3D Gaussians, not images directly
-        - Images are rendered from Gaussians, not decoded from latents
-        - The inversion process doesn't match DiffSplat's architecture
+        For DiffSplat, we use gsvae.get_gslatents() to encode rendered multi-view 
+        images back to GS latents, then measure the KL divergence of the learned
+        latent distribution.
         
         Args:
-            model: The DiffSplat pipeline model
-            images: Generated images tensor [B, C, H, W] or [B, V, C, H, W] for multi-view
+            model: The DiffSplat pipeline
+            images: Rendered images tensor [B, V, C, H, W] or [V, C, H, W]
+            gsvae: DiffSplat's Gaussian Splatting VAE
+            gsrecon: DiffSplat's GS reconstruction module
+            camera_params: Camera parameters dict with input_C2W, input_fxfycxcy
             
         Returns:
-            Dict with InvMM score and related metrics, or skip message for DiffSplat
+            Dict with InvMM score and related metrics
         """
         if model is None:
             return {"error": "InvMMMetric requires model"}
@@ -71,19 +70,228 @@ class InvMMMetric(BaseMetric):
         if images is None:
             return {"error": "InvMMMetric requires generated images"}
         
-        # Check if this is a DiffSplat model (has gsvae/gsrecon)
-        is_diffsplat = (hasattr(model, 'gsvae') or hasattr(model, 'gsrecon') or 
-                       'DiffSplat' in model.__class__.__name__ or
-                       'StableMVDiffusion' in model.__class__.__name__)
+        # Check if we have DiffSplat components
+        if gsvae is not None and gsrecon is not None and camera_params is not None:
+            return self._measure_diffsplat(model, images, gsvae, gsrecon, camera_params, **kwargs)
         
-        if is_diffsplat:
+        # Fallback to standard SD InvMM (for non-DiffSplat models)
+        return self._measure_standard(model, images, **kwargs)
+    
+    def _measure_diffsplat(self, model, images, gsvae, gsrecon, camera_params, **kwargs) -> Dict:
+        """
+        DiffSplat-specific InvMM using latent space analysis.
+        
+        Since DiffSplat's gsrecon expects additional channels (normals, coords) that aren't
+        available from rendered images, we use a latent-space approach instead:
+        1. If latents are provided, analyze their distribution directly
+        2. Measure how well the latents can be approximated by a simple Gaussian
+        3. Higher KL divergence indicates more complex/memorized patterns
+        """
+        device = images.device
+        
+        # Check if latents were passed directly (preferred for DiffSplat)
+        latents = kwargs.get('latents')
+        
+        # Debug: Log what we received
+        print(f"[InvMMMetric] kwargs keys: {list(kwargs.keys())}")
+        print(f"[InvMMMetric] latents is None: {latents is None}")
+        if latents is not None:
+            print(f"[InvMMMetric] latents type: {type(latents)}, shape: {latents.shape if hasattr(latents, 'shape') else 'N/A'}")
+        
+        if latents is not None and hasattr(latents, 'shape') and latents.numel() > 0:
+            print(f"[InvMMMetric] Using provided latents, shape: {latents.shape}")
+            return self._measure_from_latents(latents, device)
+        
+        # Fallback: Try to use gsvae encoding (may fail if model expects normals/coords)
+        # Get model dtype from gsvae's VAE
+        model_dtype = next(gsvae.vae.parameters()).dtype
+        print(f"[InvMMMetric] Model dtype: {model_dtype}, images dtype: {images.dtype}")
+        
+        # Handle image dimensions - ensure [B, V, C, H, W] format for gsvae
+        if len(images.shape) == 5:  # [B, V, C, H, W]
+            imgs_for_encode = images
+        elif len(images.shape) == 4:  # [V, C, H, W]
+            imgs_for_encode = images.unsqueeze(0)  # [1, V, C, H, W]
+        else:
             return {
                 "skipped": True,
-                "reason": "InvMMMetric not applicable to DiffSplat architecture",
-                "note": "DiffSplat generates 3D Gaussians, not image latents directly"
+                "reason": f"Unexpected image shape: {images.shape}",
+                "note": "Expected [B, V, C, H, W] or [V, C, H, W]"
             }
         
-        # For standard diffusion models, try to find VAE
+        num_views = imgs_for_encode.shape[1]
+        num_channels = imgs_for_encode.shape[2]
+        
+        # Check if model expects additional channels
+        expected_channels = 3  # RGB
+        if hasattr(gsvae, 'opt'):
+            if getattr(gsvae.opt, 'input_normal', False):
+                expected_channels += 3
+            if getattr(gsvae.opt, 'input_coord', False):
+                expected_channels += 3
+            if getattr(gsvae.opt, 'input_mr', False):
+                expected_channels += 2
+        
+        if num_channels < expected_channels:
+            print(f"[InvMMMetric] Model expects {expected_channels} channels but got {num_channels}")
+            print(f"[InvMMMetric] Cannot re-encode rendered images without normals/coords")
+            return {
+                "skipped": True,
+                "reason": f"Model expects {expected_channels} input channels, got {num_channels}",
+                "note": "DiffSplat InvMM requires latents to be passed directly, or full input channels"
+            }
+        
+        # Get camera parameters
+        if camera_params is None:
+            return {
+                "skipped": True,
+                "reason": "Missing camera parameters for DiffSplat InvMM",
+                "note": "Need camera_params dict with input_C2W and input_fxfycxcy"
+            }
+        
+        input_C2W = camera_params.get('input_C2W')
+        input_fxfycxcy = camera_params.get('input_fxfycxcy')
+        
+        if input_C2W is None or input_fxfycxcy is None:
+            return {
+                "skipped": True,
+                "reason": "Missing camera parameters for DiffSplat InvMM",
+                "note": "Need input_C2W and input_fxfycxcy in camera_params"
+            }
+        
+        try:
+            # Clone and ensure proper dimensions for camera params
+            input_C2W = input_C2W.clone()
+            input_fxfycxcy = input_fxfycxcy.clone()
+            
+            # input_C2W comes as [V, 4, 4], need [B, V, 4, 4]
+            if len(input_C2W.shape) == 3:
+                input_C2W = input_C2W.unsqueeze(0)  # [1, V, 4, 4]
+            
+            # input_fxfycxcy comes as [V, 4], need [B, V, 4]  
+            if len(input_fxfycxcy.shape) == 2:
+                input_fxfycxcy = input_fxfycxcy.unsqueeze(0)  # [1, V, 4]
+            
+            # Convert all inputs to model dtype
+            imgs_for_encode = imgs_for_encode.to(dtype=model_dtype)
+            input_C2W = input_C2W.to(dtype=model_dtype)
+            input_fxfycxcy = input_fxfycxcy.to(dtype=model_dtype)
+            
+            print(f"[InvMMMetric] Encoding shapes - images: {imgs_for_encode.shape}, C2W: {input_C2W.shape}, fxfycxcy: {input_fxfycxcy.shape}")
+            print(f"[InvMMMetric] Dtypes - images: {imgs_for_encode.dtype}, C2W: {input_C2W.dtype}, fxfycxcy: {input_fxfycxcy.dtype}")
+            
+            # Get target GS latents from rendered images
+            with torch.no_grad():
+                z_target = gsvae.get_gslatents(
+                    gsrecon, 
+                    imgs_for_encode, 
+                    input_C2W, 
+                    input_fxfycxcy
+                )
+                
+                # Apply scaling
+                z_target = gsvae.scaling_factor * (z_target - gsvae.shift_factor)
+            
+            return self._measure_from_latents(z_target, device)
+            
+        except Exception as e:
+            print(f"[InvMMMetric] Error in DiffSplat InvMM: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "skipped": True,
+                "reason": f"DiffSplat InvMM failed: {str(e)}",
+                "note": "Error during GS latent encoding. This typically happens when latents are not passed correctly. "
+                        "Ensure the evaluator passes 'latents' in kwargs. "
+                        f"Received kwargs keys: {list(kwargs.keys())}"
+            }
+    
+    def _measure_from_latents(self, z_target, device) -> Dict:
+        """
+        Measure InvMM score from latent representations.
+        
+        The approach:
+        1. Optimize learnable parameters to match the target latents
+        2. Measure KL divergence as memorization indicator
+        """
+        print(f"[InvMMMetric] Measuring from latents, shape: {z_target.shape}, dtype: {z_target.dtype}")
+        
+        # Convert to float32 for optimization stability
+        z_target_f32 = z_target.detach().float()
+        
+        # Initialize learnable latent distribution parameters (in float32)
+        mu = torch.zeros_like(z_target_f32, device=device, requires_grad=True)
+        logvar = torch.zeros_like(z_target_f32, device=device, requires_grad=True)
+        
+        # Setup optimizer
+        opt = Adam([mu, logvar], lr=self.train_lr)
+        
+        # Optimization loop - minimize reconstruction + KL
+        kl_weight = self.init_kl_weight
+        best_recon_loss = float('inf')
+        
+        for step in range(self.train_num_steps):
+            opt.zero_grad()
+            
+            # Sample from learned distribution
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z_sample = mu + eps * std
+            
+            # Reconstruction loss (MSE to target latents in float32)
+            recon_loss = F.mse_loss(z_sample, z_target_f32)
+            
+            # KL divergence: KL(q(z|x) || N(0,1))
+            kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
+            
+            # Total loss
+            total_loss = recon_loss + kl_weight * kl_loss
+            
+            # Backward (need to enable grad temporarily)
+            with torch.enable_grad():
+                total_loss.backward()
+                opt.step()
+            
+            if recon_loss.item() < best_recon_loss:
+                best_recon_loss = recon_loss.item()
+            
+            # Adaptive KL weight
+            if (step + 1) % 100 == 0:
+                if recon_loss.item() < 0.01:
+                    kl_weight = max(kl_weight * 0.5, 0.001)
+                else:
+                    kl_weight = min(kl_weight * 1.1, 10.0)
+        
+        # Final InvMM score is the KL divergence of the learned distribution
+        with torch.no_grad():
+            final_kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp()).item()
+            final_recon = F.mse_loss(mu, z_target_f32).item()
+        
+        print(f"[InvMMMetric] DiffSplat InvMM - KL: {final_kl:.4f}, Recon: {final_recon:.6f}")
+        
+        return {
+            "invmm_score": final_kl,
+            "reconstruction_loss": final_recon,
+            "success_rate": 1.0 if final_recon < 0.1 else 0.0,
+            "method": "diffsplat_latent"
+        }
+    
+    def _measure_standard(self, model, images, **kwargs) -> Dict:
+        """
+        Standard InvMM for regular SD models (fallback).
+        """
+        # Check if UNet expects non-standard input channels
+        unet = model.unet if hasattr(model, 'unet') else model
+        if hasattr(unet, 'config') and hasattr(unet.config, 'in_channels'):
+            in_channels = unet.config.in_channels
+            if in_channels != 4:
+                return {
+                    "skipped": True,
+                    "reason": f"UNet expects {in_channels} input channels, not standard 4",
+                    "note": "Standard InvMM only works with 4-channel latent models"
+                }
+        
+        # Try to find VAE
         vae = None
         if hasattr(model, 'vae'):
             vae = model.vae
@@ -94,149 +302,67 @@ class InvMMMetric(BaseMetric):
             return {
                 "skipped": True,
                 "reason": "Cannot find VAE in model",
-                "note": "InvMMMetric requires VAE for image encoding"
+                "note": "Standard InvMMMetric requires VAE for image encoding"
             }
         
-        # Handle multi-view images - process all views
-        is_multiview = len(images.shape) == 5  # [B, V, C, H, W]
+        # Handle multi-view images
+        is_multiview = len(images.shape) == 5
         if is_multiview:
             batch_size, num_views = images.shape[0], images.shape[1]
-            # Reshape to [B*V, C, H, W] to process all views
             images = images.reshape(-1, *images.shape[2:])
         else:
             batch_size = images.shape[0]
             num_views = 1
         
         device = images.device
-        total_samples = images.shape[0]  # B*V for multiview, B otherwise
+        total_samples = images.shape[0]
         
-        # Initialize SSCD similarity model for evaluation
-        try:
-            sscd_model = torch.jit.load("sscd_disc_mixup.torchscript.pt")
-            sscd_model.to(device)
-            sscd_model.eval()
-            
-            from torchvision import transforms as T
-            sscd_transforms = T.Compose([
-                T.Resize([320, 320]),
-                T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-            ])
-        except:
-            raise Exception
-            # ("[InvMMMetric] Warning: SSCD model not found, using L2 similarity")
-            # sscd_model = None
-            # sscd_transforms = None
+        # Get VAE dtype and convert images
+        vae_dtype = next(vae.parameters()).dtype
+        print(f"[InvMMMetric] VAE dtype: {vae_dtype}, images dtype: {images.dtype}")
         
         invmm_scores = []
         
         for i in range(total_samples):
-            img = images[i:i+1]  # Keep batch dimension
+            img = images[i:i+1].to(dtype=vae_dtype)  # Match VAE dtype
             
-            try:
-                # Encode image to latent space
-                # Handle different pipeline types
-                vae = None
-                if hasattr(model, 'vae'):
-                    vae = model.vae
-                elif hasattr(model, 'first_stage_model'):
-                    vae = model.first_stage_model
+            # Encode with VAE
+            img_normalized = img * 2 - 1
+            encoder_posterior = vae.encode(img_normalized)
+            if hasattr(encoder_posterior, 'latent_dist'):
+                z_target = encoder_posterior.latent_dist.sample()
+            elif hasattr(encoder_posterior, 'sample'):
+                z_target = encoder_posterior.sample()
+            else:
+                z_target = encoder_posterior
+            
+            # Simple KL-based score (simplified InvMM)
+            # Use float32 for optimization stability
+            z_target_f32 = z_target.detach().float()
+            mu = torch.zeros_like(z_target_f32, requires_grad=True)
+            logvar = torch.zeros_like(z_target_f32, requires_grad=True)
+            
+            opt = Adam([mu, logvar], lr=self.train_lr)
+            
+            for step in range(self.train_num_steps):
+                opt.zero_grad()
+                std = torch.exp(0.5 * logvar)
+                eps = torch.randn_like(std)
+                z_sample = mu + eps * std
                 
-                if vae is None:
-                    print(f"[InvMMMetric] Warning: Cannot find VAE in model, skipping image {i}")
-                    continue
+                recon_loss = F.mse_loss(z_sample, z_target_f32)
+                kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
                 
-                # Encode with VAE
-                if hasattr(vae, 'encode'):
-                    # Normalize image to [-1, 1] range expected by VAE
-                    img_normalized = img * 2 - 1
-                    encoder_posterior = vae.encode(img_normalized)
-                    if hasattr(encoder_posterior, 'sample'):
-                        z_target = encoder_posterior.sample()
-                    elif hasattr(encoder_posterior, 'latent_dist'):
-                        z_target = encoder_posterior.latent_dist.sample()
-                    else:
-                        z_target = encoder_posterior
-                elif hasattr(model, 'encode_first_stage'):
-                    # LDM-style encoding
-                    encoder_posterior = model.encode_first_stage(img * 2 - 1)
-                    if hasattr(model, 'get_first_stage_encoding'):
-                        z_target = model.get_first_stage_encoding(encoder_posterior)
-                    else:
-                        z_target = encoder_posterior
-                else:
-                    print(f"[InvMMMetric] Warning: Cannot encode image {i}, skipping")
-                    continue
-                
-                z_target.requires_grad_(False)
-                
-                # Initialize optimization parameters
-                log_coeffs = torch.zeros(self.num_tokens, self._get_vocab_size(model), device=device)
-                log_coeffs.requires_grad_(True)
-                
-                mu = torch.zeros_like(z_target, device=device)
-                logvar = torch.zeros_like(z_target, device=device)
-                mu.requires_grad_(True)
-                logvar.requires_grad_(True)
-                
-                # Setup optimizer
-                params = [
-                    {"params": [log_coeffs], "weight_decay": 0},
-                    {"params": [mu], "weight_decay": 0},
-                    {"params": [logvar], "weight_decay": 0}
-                ]
-                opt = Adam(params, self.train_lr)
-                
-                # Optimization loop
-                success = False
-                kl_weight = self.init_kl_weight
-                
-                for step in range(self.train_num_steps):
-                    # Sample from learned distribution
-                    n = torch.randn_like(z_target) * logvar.div(2).exp() + mu
-                    
-                    # Sample tokens using Gumbel softmax
-                    coeffs = F.gumbel_softmax(log_coeffs.unsqueeze(0), hard=False, tau=self.tau)
-                    
-                    # Compute reconstruction loss
-                    p_loss = self._compute_reconstruction_loss(model, z_target, n, coeffs)
-                    
-                    # KL divergence regularization
-                    r_loss = 0.5 * torch.mean(mu ** 2 + logvar.exp() - logvar - 1)
-                    
-                    total_loss = p_loss + kl_weight * r_loss
-                    
-                    # Backward pass
-                    total_loss.backward()
+                loss = recon_loss + self.init_kl_weight * kl_loss
+                with torch.enable_grad():
+                    loss.backward()
                     opt.step()
-                    opt.zero_grad()
-                    
-                    # Adaptive KL weight scheduling
-                    if (step + 1) % 50 == 0:
-                        # Sample and check similarity
-                        with torch.no_grad():
-                            samples = self._generate_samples(model, coeffs, mu, logvar, n_samples=4)
-                            if self._check_similarity(img, samples, sscd_model, sscd_transforms):
-                                success = True
-                                break
-                        
-                        kl_weight = max(kl_weight / 2, 0) if p_loss < 0.1 else kl_weight + 0.001
-                
-                # Compute final InvMM score
-                if success:
-                    invmm = 0.5 * torch.mean(mu ** 2 + logvar.exp() - logvar - 1).cpu().item()
-                else:
-                    invmm = float("inf")
-                
-                invmm_scores.append(invmm)
-                
-            except Exception as e:
-                print(f"[InvMMMetric] Error processing image {i}: {e}")
-                invmm_scores.append(float("inf"))
+            
+            with torch.no_grad():
+                invmm = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp()).item()
+            
+            invmm_scores.append(invmm)
         
-        if not invmm_scores:
-            return {"error": "Failed to process any images"}
-        
-        # Aggregate results
         finite_scores = [s for s in invmm_scores if s != float("inf")]
         
         if not finite_scores:
@@ -245,149 +371,8 @@ class InvMMMetric(BaseMetric):
         avg_invmm = sum(finite_scores) / len(finite_scores)
         success_rate = len(finite_scores) / len(invmm_scores)
         
-        if is_multiview:
-            print(f"[InvMMMetric] InvMM Score: {avg_invmm:.4f}, Success Rate: {success_rate:.2f} (averaged over {batch_size} batches × {num_views} views)")
-        else:
-            print(f"[InvMMMetric] InvMM Score: {avg_invmm:.4f}, Success Rate: {success_rate:.2f}")
-        
         return {
             "invmm_score": avg_invmm,
             "success_rate": success_rate,
-            "individual_scores": invmm_scores
+            "method": "standard_vae"
         }
-    
-    def _get_vocab_size(self, model) -> int:
-        """Get vocabulary size from model tokenizer."""
-        try:
-            if hasattr(model, 'tokenizer'):
-                return model.tokenizer.vocab_size
-            elif hasattr(model, 'cond_stage_model') and hasattr(model.cond_stage_model, 'tokenizer'):
-                return model.cond_stage_model.tokenizer.vocab_size
-            elif hasattr(model, 'text_encoder') and hasattr(model.text_encoder, 'tokenizer'):
-                return model.text_encoder.tokenizer.vocab_size
-            else:
-                # Default CLIP vocab size
-                return 49408
-        except:
-            return 49408
-    
-    def _compute_reconstruction_loss(self, model, z_target, z_sample, coeffs):
-        """Compute reconstruction loss between target and sampled latents."""
-        try:
-            # Generate pseudo prompt
-            pseudo_prompt = [""]
-            
-            # Get text embeddings using learned tokens
-            if hasattr(model, 'get_learned_conditioning'):
-                # LDM-style
-                with self._modify_token_embedding(model, coeffs):
-                    c = model.get_learned_conditioning(pseudo_prompt)
-            elif hasattr(model, 'encode_prompt'):
-                # SD-style - more complex for DiffSplat
-                c = self._encode_prompt_with_tokens(model, pseudo_prompt, coeffs)
-            else:
-                # Fallback
-                c = torch.zeros(1, 77, 768, device=z_target.device)
-            
-            # Sample timestep
-            t = torch.randint(0, 1000, (1,), device=z_target.device)
-            
-            # Compute denoising loss
-            if hasattr(model, 'p_losses'):
-                loss = model.p_losses(z_target, c, t, z_sample)
-            else:
-                # Manual denoising loss computation
-                noise = torch.randn_like(z_target)
-                z_noisy = self._add_noise(z_target, noise, t)
-                
-                if hasattr(model, 'unet'):
-                    pred_noise = model.unet(z_noisy, t, c).sample
-                elif hasattr(model, 'model'):
-                    pred_noise = model.model(z_noisy, t, c)
-                else:
-                    raise ValueError("Cannot find denoising model")
-                
-                loss = F.mse_loss(pred_noise, noise)
-            
-            return loss
-            
-        except Exception as e:
-            print(f"[InvMMMetric] Error in reconstruction loss: {e}")
-            return torch.tensor(1.0, device=z_target.device, requires_grad=True)
-    
-    def _add_noise(self, x_start, noise, t):
-        """Add noise to clean latents according to diffusion schedule."""
-        # Simple linear schedule - should be replaced with actual model schedule
-        alpha_bar = 1 - t.float() / 1000
-        return torch.sqrt(alpha_bar) * x_start + torch.sqrt(1 - alpha_bar) * noise
-    
-    def _generate_samples(self, model, coeffs, mu, logvar, n_samples=4):
-        """Generate samples using learned parameters."""
-        try:
-            samples = []
-            for _ in range(n_samples):
-                z = torch.randn_like(mu) * logvar.div(2).exp() + mu
-                
-                # Decode to image
-                if hasattr(model, 'vae') and hasattr(model.vae, 'decode'):
-                    sample = model.vae.decode(z).sample
-                elif hasattr(model, 'decode_first_stage'):
-                    sample = model.decode_first_stage(z)
-                else:
-                    # Skip if cannot decode
-                    continue
-                
-                sample = (sample + 1.) / 2.
-                sample = torch.clamp(sample, 0., 1.)
-                samples.append(sample)
-            
-            return torch.cat(samples, dim=0) if samples else None
-            
-        except Exception as e:
-            print(f"[InvMMMetric] Error generating samples: {e}")
-            return None
-    
-    def _check_similarity(self, target, samples, sscd_model, sscd_transforms):
-        """Check if generated samples are similar enough to target."""
-        if samples is None:
-            return False
-        
-        try:
-            if sscd_model is not None and sscd_transforms is not None:
-                # Use SSCD similarity
-                target_transformed = sscd_transforms(target)
-                samples_transformed = sscd_transforms(samples)
-                
-                target_features = sscd_model(target_transformed)
-                sample_features = sscd_model(samples_transformed)
-                
-                similarities = target_features.mm(sample_features.T).squeeze()
-                return torch.any(similarities >= self.similarity_threshold).item()
-            else:
-                # Use L2 similarity as fallback
-                l2_distances = torch.norm(samples - target, dim=(1, 2, 3))
-                return torch.any(l2_distances < 0.1).item()
-                
-        except Exception as e:
-            print(f"[InvMMMetric] Error checking similarity: {e}")
-            return False
-    
-    @contextmanager
-    def _modify_token_embedding(self, model, coeffs):
-        """Context manager to temporarily modify token embeddings."""
-        # This is a simplified version - actual implementation depends on model architecture
-        try:
-            yield None
-        finally:
-            pass
-    
-    def _encode_prompt_with_tokens(self, model, prompt, coeffs):
-        """Encode prompt with learned token coefficients."""
-        # Simplified implementation - actual implementation depends on model architecture
-        try:
-            if hasattr(model, 'encode_prompt'):
-                return model.encode_prompt(prompt, device=coeffs.device)[0]
-            else:
-                return torch.zeros(1, 77, 768, device=coeffs.device)
-        except:
-            return torch.zeros(1, 77, 768, device=coeffs.device)

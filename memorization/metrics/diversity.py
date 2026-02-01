@@ -10,6 +10,7 @@ import torch
 import torch.nn.functional as F
 from torchvision import transforms
 from torchmetrics.functional.pairwise import pairwise_cosine_similarity
+from torchmetrics.functional.image import structural_similarity_index_measure
 
 from .base import BaseMetric
 
@@ -159,10 +160,10 @@ class DiversityMetric(BaseMetric):
         if intermediates is not None and len(intermediates) >= 2:
             try:
                 noise_diff_images = []
-                for intermediates in intermediates:
-                    if 'uncond_noise' in intermediates and 'text_noise' in intermediates:
+                for intermediate in intermediates:  # Fixed: renamed loop variable
+                    if 'uncond_noise' in intermediate and 'text_noise' in intermediate:
                         noise_diff = self._compute_noise_difference_image(
-                            intermediates['uncond_noise'], intermediates['text_noise']
+                            intermediate['uncond_noise'], intermediate['text_noise']
                         )
                         noise_diff_images.append(noise_diff)
                 

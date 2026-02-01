@@ -16,13 +16,16 @@ def update_memorized_field(file_path: str, set_to_true: bool):
             # Load the JSON content into a Python dictionary
             data = json.load(f)
 
-        # Update or add the 'memorized' field
-        # This is simpler and safer than regex
-        if data.get("memorized") == set_to_true:
+        # Update or add the 'memorized' field inside 'metrics'
+        # Ensure 'metrics' dict exists
+        if "metrics" not in data:
+            data["metrics"] = {}
+
+        if data["metrics"].get("memorized") == set_to_true:
             print(f"Skipped (already set): {file_path}")
             return
 
-        data["memorized"] = set_to_true
+        data["metrics"]["memorized"] = set_to_true
 
         # Write the modified dictionary back to the file with indentation
         with open(file_path, 'w') as f:
@@ -79,5 +82,5 @@ def main():
 
 if __name__ == "__main__":
     main()
-    # python batch_relabel.py false "./output/baseline/laion_memorized/*.json"
+    # python batch_relabel.py false "./output/laion_memorized/*.json"
     # python batch_relabel.py true "./output/baseline/cap3d/*.json"

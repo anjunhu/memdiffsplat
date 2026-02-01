@@ -226,6 +226,18 @@ class DiffSplatEvaluator:
                     # InvMMMetric expects images in [B, C, H, W] format
                     # rendered_images is (V, 3, H, W), add batch dimension
                     kwargs['images'] = rendered_images.unsqueeze(0)  # (1, V, 3, H, W)
+                    # Pass full pipeline so InvMM can access VAE
+                    kwargs['model'] = self.pipeline
+                    # Pass DiffSplat-specific components for GS latent encoding
+                    kwargs['gsvae'] = self.gsvae
+                    kwargs['gsrecon'] = self.gsrecon
+                    kwargs['camera_params'] = camera_params
+                    # Pass latents directly - this is the preferred approach for DiffSplat
+                    # since re-encoding rendered images requires normals/coords
+                    logger.info(f"[InvMM] Passing latents to InvMM, latents is None: {latents is None}")
+                    if latents is not None:
+                        logger.info(f"[InvMM] latents shape: {latents.shape}, dtype: {latents.dtype}")
+                    kwargs['latents'] = latents
                 
                 # Add latents for PLaplaceMetric
                 if isinstance(metric, PLaplaceMetric):

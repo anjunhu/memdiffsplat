@@ -2,6 +2,7 @@
 ```
 wget https://huggingface.co/datasets/tiange/Cap3D/resolve/main/Cap3D_automated_Objaverse_full.csv
 python run_baseline.py
+python memorization/evaluation/analysis.py --groups cap3d laion_memorized
 ```
 
 ### Download Pretrained Models

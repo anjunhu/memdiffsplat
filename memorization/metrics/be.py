@@ -190,21 +190,24 @@ class BrightEndingMetric(BaseMetric):
             print("[BrightEndingMetric] Warning: Could not find BE map from either live cache or disk. Returning only d_score.")
             return {"d_score": d_global}
 
-        # Compute noise differences
-        noise_diff_traj = [(tn - un) for tn, un in zip(text_noise, uncond_noise)]
+        # Compute noise differences - IMPORTANT: clone and move to CPU to avoid affecting model
+        # The intermediates may still be connected to the computation graph
+        noise_diff_traj = [(tn.detach().cpu() - un.detach().cpu()) for tn, un in zip(text_noise, uncond_noise)]
         
-        # Ensure be_map has batch dimension for interpolation
+        # Ensure be_map has batch dimension for interpolation (already on CPU from controller)
         if len(be_map.shape) == 2:
             be_map = be_map.unsqueeze(0).unsqueeze(0)  # [1, 1, H, W]
         elif len(be_map.shape) == 3:
             be_map = be_map.unsqueeze(0)  # [1, B, H, W] -> assume B=1
         
-        # Keep everything on same device and use raw attention weights
+        # Keep everything on CPU to avoid interfering with model state
+        be_map = be_map.cpu().float()
+        
         masked_diffs = []
         for diff in noise_diff_traj:
-            # Interpolate BE map to match diff spatial dimensions
+            # Interpolate BE map to match diff spatial dimensions (all on CPU)
             be_map_resized = F.interpolate(
-                be_map.to(diff.device), 
+                be_map, 
                 size=diff.shape[2:], 
                 mode='bilinear', 
                 align_corners=False
@@ -220,7 +223,7 @@ class BrightEndingMetric(BaseMetric):
         
         # Use the resized be_map for denominator calculation
         be_map_for_denom = F.interpolate(
-            be_map.to(noise_diff_traj[0].device), 
+            be_map, 
             size=noise_diff_traj[0].shape[2:], 
             mode='bilinear', 
             align_corners=False
