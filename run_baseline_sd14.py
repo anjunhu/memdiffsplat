@@ -479,10 +479,13 @@ def main(cfg):
                     try:
                         # --- SIMPLIFIED ATTENTION CONTROLLER SETUP ---
                         # Just create the controller - pipeline will handle everything else
+                        # For 20 DDIM steps with timesteps [999, 949, ..., 49]:
+                        # Capture first (999), last 4 for CAE-D (199, 149, 99, 49), and middle (499)
+                        # CAE-D uses final ~20% of timesteps, so we need at least the last few
                         controller = AttentionStore(
                             input_height=render_params['height'], 
                             input_width=render_params['width'], 
-                            store_timesteps=[999, 49],
+                            store_timesteps=[999, 499, 199, 149, 99, 49],  # First, middle, and final 4 steps
                         )
                         
                         artifacts = {

@@ -299,12 +299,12 @@ def main(cfg):
 
     # Create dataset manager and load data
     dataset_config = getattr(cfg, 'dataset_config', {
-        'laion_memorized': {
-            'path': 'data/nemo-prompts/memorized_laion_prompts.csv',  # Update this path
-            'max_prompts_per_cluster': 4,
-            'max_clusters': 100,
-            'source_type': 'csv'
-        },
+        # 'laion_memorized': {
+        #     'path': 'data/nemo-prompts/memorized_laion_prompts.csv',  # Update this path
+        #     'max_prompts_per_cluster': 4,
+        #     'max_clusters': 100,
+        #     'source_type': 'csv'
+        # },
         'cap3d': {
             'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
@@ -354,24 +354,10 @@ def main(cfg):
             'max_prompts_per_cluster': 4,
             'max_clusters': 20,
         },
-        'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-            'concept_key': "avocado",
-            'max_prompts_per_cluster': 4,
-            'max_clusters': 20,
-        },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-        #     'concept_key': "automatic_washer",
-        #     'max_prompts_per_cluster': 4,
-        #     'max_clusters': 20,
-        # },
-        # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-        #     'concept_key': "armchair",
+        #     'concept_key': "avocado",
         #     'max_prompts_per_cluster': 4,
         #     'max_clusters': 20,
         # },
@@ -470,10 +456,13 @@ def main(cfg):
                     try:
                         # --- SIMPLIFIED ATTENTION CONTROLLER SETUP ---
                         # Just create the controller - pipeline will handle everything else
+                        # For 20 DDIM steps with timesteps [999, 949, ..., 49]:
+                        # Capture first (999), last 4 for CAE-D (199, 149, 99, 49), and middle (499)
+                        # CAE-D uses final ~20% of timesteps, so we need at least the last few
                         controller = AttentionStore(
                             input_height=render_params['height'], 
                             input_width=render_params['width'], 
-                            store_timesteps=[999, 49],
+                            store_timesteps=[999, 499, 199, 149, 99, 49],  # First, middle, and final 4 steps
                         )
                         
                         artifacts = {
