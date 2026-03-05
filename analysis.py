@@ -41,6 +41,7 @@ from sklearn.metrics import roc_curve, auc
 from scipy.stats import gaussian_kde
 from collections import defaultdict
 import fnmatch
+import re
 
 from memorization.constants import (
     OUTPUT_ROOT,
@@ -57,12 +58,8 @@ HESSIAN_CONFIG = {
         'uncond_template': 'Hessian_SAIL_Metric_visualizations_{t}_uncond_magnitudes',
         'diff_template': 'Hessian_SAIL_diff_{t}',
         'scalar_diff_template': 'Hessian_SAIL_diff_sum_{t}',
-        'check_cols': [
-            'Hessian_SAIL_Metric_hessian_sail_norm',
-            'Hessian_SAIL_Metric_visualizations_t50_cond_magnitudes',
-            'Hessian_SAIL_Metric_visualizations_t20_cond_magnitudes',
-            'Hessian_SAIL_Metric_visualizations_t1_cond_magnitudes'
-        ],
+        'check_prefix': 'Hessian_SAIL_Metric_visualizations_',
+        'check_suffix': '_cond_magnitudes',
         'plot_title': 'Hessian (FiniDiff) Eigenvalue Distribution Comparison'
     },
     'autograd': {
@@ -70,14 +67,29 @@ HESSIAN_CONFIG = {
         'uncond_template': 'HessianMetric_{t}_uncond_eigvals',
         'diff_template': 'HessianMetric_diff_{t}',
         'scalar_diff_template': 'HessianMetric_diff_sum_{t}',
-        'check_cols': [
-            'HessianMetric_t50_cond_eigvals',
-            'HessianMetric_t20_cond_eigvals',
-            'HessianMetric_t1_cond_eigvals'
-        ],
+        'check_prefix': 'HessianMetric_',
+        'check_suffix': '_cond_eigvals',
         'plot_title': 'Hessian (AutoGrad) Eigenvalue Distribution Comparison'
     }
 }
+
+
+def detect_hessian_timesteps(df_columns, config):
+    """
+    Dynamically detect available Hessian timesteps from DataFrame columns.
+    Returns list of timestep key strings sorted descending by numeric value.
+    """
+    prefix = config.get('check_prefix', '')
+    suffix = config.get('check_suffix', '')
+    timesteps = set()
+    pattern = re.compile(rf'^{re.escape(prefix)}([a-zA-Z]?\d+){re.escape(suffix)}$')
+    for col in df_columns:
+        match = pattern.match(col)
+        if match:
+            timesteps.add(match.group(1))
+    def sort_key(val):
+        return int(re.sub(r'[^0-9]', '', val))
+    return sorted(timesteps, key=sort_key, reverse=True)
 
 
 # --- Utility Functions for Enhanced Features ---
@@ -652,9 +664,13 @@ def plot_hessian_eigenvalue_comparison(df1, df2, label1, label2, output_path, he
     - Row 2: Distribution of the scalar sharpness gap metric.
     - Row 3: ROC curve for the scalar sharpness gap metric.
     """
-    timesteps = ['t50', 't20', 't1']
+    all_cols = set(df1.columns) | set(df2.columns)
+    timesteps = detect_hessian_timesteps(all_cols, hessian_config)
+    if not timesteps:
+        print("Warning: No Hessian timesteps found for plotting.")
+        return
     
-    fig, axes = plt.subplots(3, len(timesteps), figsize=(18, 18))
+    fig, axes = plt.subplots(3, len(timesteps), figsize=(6 * len(timesteps), 18))
     
     title = f"{hessian_config['plot_title']}\n'{label1}' vs '{label2}'"
     if title_supplement:
@@ -750,10 +766,23 @@ def run_summary_table(args, df_full, all_dirs):
         ("Local X-Attn Entropy", "CrossAttention_Entropy_entropy"),
         ("BE (Localized ||sθΔ(xt)||)", "BrightEnding_LD_Score_ld_score"),
         ("||sθΔ(xt)||", "Noise_Difference_Norm_noise_diff_norm_mean"),
-        ("Hessian FiniDiff (t=50)", "Hessian_SAIL_diff_sum_t50"),
-        ("Hessian FiniDiff (t=20)", "Hessian_SAIL_diff_sum_t20"),
-        ("Hessian FiniDiff (t=1)", "Hessian_SAIL_diff_sum_t1"),
     ]
+    
+    # Dynamically add Hessian metrics based on what's in the data
+    for m_type, config in HESSIAN_CONFIG.items():
+        detected_ts = detect_hessian_timesteps(df_to_analyze.columns, config)
+        for t in detected_ts:
+            col_name = config['scalar_diff_template'].format(t=t)
+            display_name = f"Hessian {m_type.title()} ({t})"
+            if col_name in df_to_analyze.columns:
+                summary_metrics_list.append((display_name, col_name))
+    
+    # Dynamically add pLaplace metrics if present
+    for col in sorted(df_to_analyze.columns):
+        if col.startswith('pLaplace') and df_to_analyze[col].notna().any():
+            display = col.replace('_', ' ')
+            summary_metrics_list.append((display, col))
+    
     results = {}
     table_title = ""
 
@@ -852,7 +881,7 @@ def run_two_group_directory_comparison(args, df_full, metrics_to_plot):
         os.makedirs(output_dir, exist_ok=True)
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             
@@ -931,7 +960,7 @@ def run_multi_group_directory_comparison(args, df_full, metrics_to_plot):
         print("Error: Need at least 2 groups with data for multi-group comparison.")
         return
     
-    combined_label = "_vs_".join([g['label'] for g in group_data])
+    combined_label = create_safe_filename("_vs_".join([g['label'] for g in group_data]), max_length=80)
     
     # Plot Hessian diff if requested or if 'all' metrics are requested
     if args.plot_hessian_diff or (args.metric and 'all' in args.metric):
@@ -940,7 +969,7 @@ def run_multi_group_directory_comparison(args, df_full, metrics_to_plot):
         
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             
@@ -1006,10 +1035,16 @@ def plot_multi_group_hessian_comparison(group_data, output_path, hessian_config,
     Creates a comprehensive multi-group Hessian analysis plot.
     Similar structure to the original but supports multiple groups.
     """
-    timesteps = ['t50', 't20', 't1']
+    all_cols = set()
+    for group in group_data:
+        all_cols |= set(group['df'].columns)
+    timesteps = detect_hessian_timesteps(all_cols, hessian_config)
+    if not timesteps:
+        print("Warning: No Hessian timesteps found for multi-group plotting.")
+        return
     n_groups = len(group_data)
     
-    fig, axes = plt.subplots(3, len(timesteps), figsize=(18, 18))
+    fig, axes = plt.subplots(3, len(timesteps), figsize=(6 * len(timesteps), 18))
     
     title = f"{hessian_config['plot_title']} - Multi-Group Analysis"
     if title_supplement:
@@ -1322,7 +1357,7 @@ def run_field_comparison(args, df_full, mode, metrics_to_plot):
     
     g1_label = "+".join(args.group1).replace('/', '-')
     g2_label = "+".join(args.group2).replace('/', '-') if args.group2 else None
-    combined_label = g1_label + (f"-VS-{g2_label}" if g2_label else "")
+    combined_label = create_safe_filename(g1_label + (f"-VS-{g2_label}" if g2_label else ""), max_length=80)
 
     # Plot Hessian diff if requested or if 'all' metrics are requested
     if args.plot_hessian_diff or (args.metric and 'all' in args.metric):
@@ -1331,7 +1366,7 @@ def run_field_comparison(args, df_full, mode, metrics_to_plot):
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
             # Use the more robust check here as well
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             
@@ -1609,14 +1644,15 @@ def main():
     # --- Automatic Hessian Metric Processing ---
     print("Checking for Hessian metrics to process...")
     for m_type, config in HESSIAN_CONFIG.items():
-        if any(col in df_full.columns for col in config['check_cols']):
-            print(f"Found and processing '{m_type}' type Hessian metrics...")
-            for t in ['t1', 't20', 't50']:
+        detected_timesteps = detect_hessian_timesteps(df_full.columns, config)
+        if detected_timesteps:
+            print(f"Found and processing '{m_type}' type Hessian metrics with timesteps: {detected_timesteps}")
+            for t in detected_timesteps:
                 cond_col, uncond_col = config['cond_template'].format(t=t), config['uncond_template'].format(t=t)
                 diff_col = config['diff_template'].format(t=t)
                 if cond_col in df_full.columns and uncond_col in df_full.columns:
-                    def subtract_lists(row):
-                        cond, uncond = row[cond_col], row[uncond_col]
+                    def subtract_lists(row, cc=cond_col, uc=uncond_col):
+                        cond, uncond = row[cc], row[uc]
                         if isinstance(cond, list) and isinstance(uncond, list):
                             min_len = min(len(cond), len(uncond))
                             return [c - u for c, u in zip(cond[:min_len], uncond[:min_len])]
@@ -1624,7 +1660,7 @@ def main():
                     df_full[diff_col] = df_full.apply(subtract_lists, axis=1)
             
             print(f"Generating scalar sum metrics for '{m_type}' type...")
-            for t in ['t1', 't20', 't50']:
+            for t in detected_timesteps:
                 diff_col, scalar_diff_col = config['diff_template'].format(t=t), config['scalar_diff_template'].format(t=t)
                 if diff_col in df_full.columns:
                     df_full[scalar_diff_col] = df_full[diff_col].apply(lambda x: np.sum(x) if isinstance(x, list) else np.nan)

@@ -101,6 +101,10 @@ def detect_hessian_timesteps(df_columns, config):
     return sorted(timesteps, key=lambda x: int(x[1:]), reverse=True)
 
 
+
+
+
+
 # --- Utility Functions for Enhanced Features ---
 
 def expand_wildcards(directory_patterns):
@@ -616,6 +620,7 @@ def plot_scalar_distributions_teaser(
 
 def plot_scalar_distributions(df1, df2, label1, label2, metric, output_path, title):
     """Plots distribution histograms for a scalar metric from two dataframes."""
+
     plt.figure(figsize=(12, 8))
     scores1 = df1[metric].dropna().astype(float) # Class 0
     scores2 = df2[metric].dropna().astype(float) # Class 1
@@ -1482,7 +1487,7 @@ def run_two_group_directory_comparison(args, df_full, metrics_to_plot):
         os.makedirs(output_dir, exist_ok=True)
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             
@@ -1561,7 +1566,7 @@ def run_multi_group_directory_comparison(args, df_full, metrics_to_plot):
         print("Error: Need at least 2 groups with data for multi-group comparison.")
         return
     
-    combined_label = "_vs_".join([g['label'] for g in group_data])
+    combined_label = create_safe_filename("_vs_".join([g['label'] for g in group_data]), max_length=80)
     
     # Plot Hessian diff if requested or if 'all' metrics are requested
     if args.plot_hessian_diff or (args.metric and 'all' in args.metric):
@@ -1570,7 +1575,7 @@ def run_multi_group_directory_comparison(args, df_full, metrics_to_plot):
         
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             
@@ -1966,7 +1971,7 @@ def run_field_comparison(args, df_full, mode, metrics_to_plot):
     
     g1_label = "+".join(args.group1).replace('/', '-')
     g2_label = "+".join(args.group2).replace('/', '-') if args.group2 else None
-    combined_label = g1_label + (f"-VS-{g2_label}" if g2_label else "")
+    combined_label = create_safe_filename(g1_label + (f"-VS-{g2_label}" if g2_label else ""), max_length=80)
 
     # Plot Hessian diff if requested or if 'all' metrics are requested
     if args.plot_hessian_diff or (args.metric and 'all' in args.metric):
@@ -1974,7 +1979,7 @@ def run_field_comparison(args, df_full, mode, metrics_to_plot):
         os.makedirs(output_dir, exist_ok=True)
         for m_type in args.hessian_metric_type:
             config = HESSIAN_CONFIG.get(m_type)
-            if not any(col in df_full.columns for col in config['check_cols']):
+            if not detect_hessian_timesteps(df_full.columns, config):
                 print(f"Warning: Data for Hessian metric type '{m_type}' not found. Skipping its plot.")
                 continue
             

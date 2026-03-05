@@ -32,6 +32,7 @@ class StableDiffusionPipelineExtraOutput(BaseOutput):
     text_noise: list
     x_inter: list
     timesteps: list
+    initial_latents: Optional[torch.Tensor] = None
 
 
 # Copied from https://github.com/camenduru/GRM/blob/master/third_party/generative_models/instant3d.py
@@ -498,6 +499,7 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
         intermediate_text_noise = []
         intermediate_x_inter = []
         intermediate_timesteps = []
+        initial_latents_snapshot = latents.detach().cpu().clone()
         with self.progress_bar(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
                 # print(t)
@@ -626,4 +628,5 @@ class StableMVDiffusionPipeline(StableDiffusionPipeline):
                                                 uncond_noise=intermediate_uncond_noise,
                                                 text_noise=intermediate_text_noise,
                                                 x_inter=intermediate_x_inter,
-                                                timesteps=intermediate_timesteps)
+                                                timesteps=intermediate_timesteps,
+                                                initial_latents=initial_latents_snapshot)

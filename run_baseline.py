@@ -347,13 +347,13 @@ def main(cfg):
         #     'max_prompts_per_cluster': 4,
         #     'max_clusters': 20,
         # },
-        'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
-            'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
-            'concept_key': "sonic_",
-            'max_prompts_per_cluster': 4,
-            'max_clusters': 20,
-        },
+        # 'cap3d': {
+        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+        #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
+        #     'concept_key': "sonic_",
+        #     'max_prompts_per_cluster': 4,
+        #     'max_clusters': 20,
+        # },
         # 'cap3d': {
         #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',

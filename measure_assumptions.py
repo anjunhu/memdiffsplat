@@ -1279,10 +1279,10 @@ def print_comprehensive_table_results_diffsplat(all_results, model_name="DiffSpl
         ("(A3) Subspace Overlap (k=8)", "a3_subspace_overlap_k8", "↑"),
 
         # A4 comprehensive
-        ("(A4) Eigenvalue Correlation", "a4_eigval_corr", "↑"),
+        # ("(A4) Eigenvalue Correlation", "a4_eigval_corr", "↑"),
         ("(A4) Eigenspace Alignment", "a4_eigvec_align", "↑"),
-        ("(A4) Covariance Commutativity", "a4_commutativity", "↑"),
-        ("(A4) Mean Equality", "a4_mean_equality", "↑"),
+        # ("(A4) Covariance Commutativity", "a4_commutativity", "↑"),
+        # ("(A4) Mean Equality", "a4_mean_equality", "↑"),
         
         # A5, A7
         ("(A5) Gaussian Prior p-value", "a5_prior_deviation_pval", "↑"),
