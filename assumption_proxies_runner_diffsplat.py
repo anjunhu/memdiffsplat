@@ -420,7 +420,13 @@ def compute_score_matching_fd(intermediates, model, cond_context, scheduler,
 
 def compute_hessian_viz_fd(intermediates, model, cond_context, uncond_context,
                            plucker=None, timesteps_to_measure=None, n_dirs=20, delta=0.01):
-    """Multi-direction FD Hessian magnitudes — comparable across all victim models."""
+    """Multi-direction FD Hessian trace estimator.
+
+    Stores signed Hutchinson samples v^T (s_plus - s_minus)/(2δ) under
+    'hessian_trace_samples'. These are unbiased estimates of tr(∂s/∂x) and
+    can be negative — correct for a score field with negative-definite Hessian.
+    Also stores unsigned 'cond_magnitudes' (||Jv||) for A3 rank persistence.
+    """
     x_inter = intermediates['x_inter']
     timesteps = intermediates['timesteps']
     if not x_inter or not timesteps:
@@ -446,10 +452,11 @@ def compute_hessian_viz_fd(intermediates, model, cond_context, uncond_context,
             t_vec = torch.full((x_packed_c.shape[0],), t_val, device=device, dtype=torch.long)
 
             try:
+                cond_trace_samples, uncond_trace_samples = [], []
                 cond_mags, uncond_mags = [], []
                 for _ in range(n_dirs):
-                    # Restrict random directions to the first 4 latent channels
-                    # to avoid diluting perturbation energy across Plücker/mask channels
+                    # Restrict perturbation to the 4 latent channels — Plücker/mask
+                    # are deterministic conditioning, not part of the latent variable.
                     v = torch.zeros_like(x_packed_c)
                     v[:, :4] = torch.randn(
                         x_packed_c.shape[0], 4, *x_packed_c.shape[2:],
@@ -457,15 +464,25 @@ def compute_hessian_viz_fd(intermediates, model, cond_context, uncond_context,
                     )
                     v = v / torch.linalg.norm(v.reshape(-1)).clamp(min=1e-8)
 
-                    s_plus = model(x_packed_c + delta * v, t_vec, encoder_hidden_states=embeds_c).sample
+                    s_plus  = model(x_packed_c + delta * v, t_vec, encoder_hidden_states=embeds_c).sample
                     s_minus = model(x_packed_c - delta * v, t_vec, encoder_hidden_states=embeds_c).sample
-                    cond_mags.append(torch.linalg.norm((s_plus - s_minus) / (2 * delta)).item())
+                    jv_cond = (s_plus - s_minus) / (2 * delta)
+                    # signed v^T Jv — unbiased Hutchinson trace estimator
+                    cond_trace_samples.append(torch.sum(v[:, :4] * jv_cond).item())
+                    cond_mags.append(torch.linalg.norm(jv_cond).item())
 
-                    s_plus = model(x_packed_u + delta * v, t_vec, encoder_hidden_states=embeds_u).sample
+                    s_plus  = model(x_packed_u + delta * v, t_vec, encoder_hidden_states=embeds_u).sample
                     s_minus = model(x_packed_u - delta * v, t_vec, encoder_hidden_states=embeds_u).sample
-                    uncond_mags.append(torch.linalg.norm((s_plus - s_minus) / (2 * delta)).item())
+                    jv_uncond = (s_plus - s_minus) / (2 * delta)
+                    uncond_trace_samples.append(torch.sum(v[:, :4] * jv_uncond).item())
+                    uncond_mags.append(torch.linalg.norm(jv_uncond).item())
 
-                results[t_val] = {'cond_magnitudes': cond_mags, 'uncond_magnitudes': uncond_mags}
+                results[t_val] = {
+                    'hessian_trace_samples': cond_trace_samples,
+                    'uncond_trace_samples':  uncond_trace_samples,
+                    'cond_magnitudes':       cond_mags,
+                    'uncond_magnitudes':     uncond_mags,
+                }
             except Exception as e:
                 logger.warning(f"Hessian-FD failed at t_idx={t_idx}: {e}")
                 continue
@@ -474,7 +491,13 @@ def compute_hessian_viz_fd(intermediates, model, cond_context, uncond_context,
 
 
 def compute_hessian_score_proportionality_fixed(intermediates, hessian_viz, scheduler):
-    """A2: Gaussian Local Structure — correlation of ||score||² with Hessian trace."""
+    """A2: Gaussian Local Structure — correlation of ||score||² with Hessian trace.
+
+    Uses the signed Hutchinson trace estimate (mean of v^T Jv samples) stored
+    under 'hessian_trace_samples'. This can be negative, which is the expected
+    sign for a score field near a mode (negative-definite Hessian). The old
+    approach of -sum(||Jv||) was always negative and inflated in magnitude.
+    """
     if len(intermediates['text_noise']) < 3 or len(hessian_viz) < 2:
         return 0.0
 
@@ -492,9 +515,10 @@ def compute_hessian_score_proportionality_fixed(intermediates, hessian_viz, sche
         sigma_t = float(np.sqrt(max(1e-8, 1.0 - float(alpha_bar_t))))
         score_mags_sq.append(torch.norm(-noise_pred / sigma_t).item() ** 2)
 
-        mags = hessian_viz[t_int].get('cond_magnitudes', [])
-        if mags:
-            hessian_traces.append(-np.sum(mags[:100]))
+        entry = hessian_viz[t_int]
+        trace_samples = entry.get('hessian_trace_samples') or entry.get('cond_magnitudes', [])
+        if trace_samples:
+            hessian_traces.append(float(np.mean(trace_samples)))
         else:
             score_mags_sq.pop()
 
@@ -528,15 +552,14 @@ def compute_sharpness_rank_persistence(hessian_viz):
             try:
                 corr, _ = spearmanr(r1[:n], r2[:n])
                 if not np.isnan(corr):
-                    correlations.append(abs(corr))
+                    correlations.append(float(corr))
             except Exception:
                 continue
     return float(np.mean(correlations)) if correlations else 0.0
 
 
 def a3_hotspot_jaccard_persistence(hessian_viz, q=0.05, lags=(1, 2, 4)):
-    """A3 alt: Jaccard similarity of top-q% eigenvalue hotspot locations across timesteps.
-    Higher = more persistence = assumption holds."""
+    """A3 alt: Jaccard similarity of top-q% eigenvalue hotspot locations across timesteps."""
     if len(hessian_viz) < 3:
         return 0.0
     ts = sorted(hessian_viz.keys(), reverse=True)
@@ -561,17 +584,25 @@ def a3_hotspot_jaccard_persistence(hessian_viz, q=0.05, lags=(1, 2, 4)):
     return float(np.mean(scores)) if scores else 0.0
 
 
-def a3_temporal_autocorr(hessian_viz, max_lag=2):
-    """A3 alt: Temporal autocorrelation of eigenvalue magnitude patterns.
-    Higher = more persistence = assumption holds."""
+def a3_temporal_autocorr(hessian_viz, max_lag=2, top_k=20):
+    """A3 (within-sample): Temporal autocorrelation of eigenvalue magnitude
+    patterns across diffusion timesteps.
+
+    Only the top-k eigenvalues by magnitude are used, consistent with the
+    implicit focus of rank persistence (top-15) and Jaccard (top-5%).
+    """
     ts = sorted(hessian_viz.keys(), reverse=True)
     rows = []
     for t in ts:
         v = np.asarray(hessian_viz[t].get('cond_magnitudes', []), dtype=np.float64)
         if v.size == 0:
             return 0.0
+        if v.size > top_k:
+            idx = np.argpartition(v, -top_k)[-top_k:]
+            v = v[np.sort(idx)]
         rows.append(v)
-    M = np.vstack(rows)
+    min_len = min(r.size for r in rows)
+    M = np.vstack([r[:min_len] for r in rows])
     if M.shape[0] < max_lag + 2:
         return 0.0
     M = (M - M.mean(axis=0, keepdims=True)) / (M.std(axis=0, keepdims=True) + 1e-9)
@@ -642,16 +673,28 @@ def compute_improved_covariance_metrics(cond_noise, uncond_noise):
     }
 
 
-def compute_prior_structure_deviation(initial_latents):
-    """A5: KS test of initial noise against N(0,1)."""
-    if initial_latents is None:
+def compute_prior_structure_deviation(initial_latents, final_latents=None):
+    """A5: KS test of denoised latents against N(0,1).
+
+    DiffSplat uses structured Gaussian-blob initialization (init_std=0.1,
+    init_noise_strength=0.95), so initial_latents are prompt-independent and
+    give identical p-values for memorized vs unmemorized — no discriminative
+    signal. Instead we test the *final* denoised latents (x_inter[-1]), which
+    reflect the prompt content: memorized prompts produce sharper, more
+    structured latents that deviate more from Gaussian.
+
+    Falls back to initial_latents if final_latents is not available.
+    Tests raw latents without standardisation so that structured or
+    non-isotropic priors are detected.
+    """
+    latents = final_latents if final_latents is not None else initial_latents
+    if latents is None:
         return 0.0
-    flat = initial_latents.flatten().cpu().numpy()
-    if len(flat) < 30 or np.std(flat) < 1e-8:
+    flat = latents.flatten().cpu().numpy()
+    if len(flat) < 30:
         return 0.0
-    std_flat = (flat - np.mean(flat)) / np.std(flat)
     try:
-        _, p_val = kstest(std_flat, 'norm')
+        _, p_val = kstest(flat, 'norm')
         return float(p_val)
     except Exception:
         return 0.0
@@ -703,6 +746,110 @@ def compute_prediction_consistency_test(intermediates, **kwargs):
         return 0.0
     mags = [torch.norm(p).item() for p in text_noise]
     return float(np.std(mags) / (np.mean(mags) + 1e-8))
+
+
+def compute_score_local_lipschitz(intermediates, model, cond_context, scheduler,
+                                  plucker=None, delta=1e-3, n_probes=6):
+    """A1 (pure): Local Lipschitz regularity of the learned score field.
+
+    Tests whether s_theta is smooth under small input perturbations,
+    which is a necessary condition for unbiased score estimation
+    *independent* of the Gaussianity assumption (A2).
+
+    Returns a value in [0, 1] where higher = smoother = better A1.
+    """
+    x_inter = intermediates.get('x_inter', [])
+    timesteps = intermediates.get('timesteps', [])
+    if len(x_inter) < 3:
+        return 0.0
+
+    m_param = next(model.parameters())
+    device, dtype = m_param.device, m_param.dtype
+    test_indices = [len(timesteps) // 4, len(timesteps) // 2, 3 * len(timesteps) // 4]
+    ratios = []
+
+    def _score_fn(x_lat, t_val):
+        x_packed, embeds = _pack_unet_input(x_lat, model, cond_context, plucker)
+        t_vec = torch.full((x_packed.shape[0],), t_val, device=device, dtype=torch.long)
+        with torch.no_grad():
+            pred = model(x_packed, t_vec, encoder_hidden_states=embeds).sample
+        return pred
+
+    for i in test_indices:
+        if i >= len(x_inter):
+            continue
+        x_t = x_inter[i].to(device=device, dtype=dtype)
+        t_val = int(timesteps[i])
+        if hasattr(scheduler, 'alphas_cumprod') and t_val < len(scheduler.alphas_cumprod):
+            alpha_bar_t = float(scheduler.alphas_cumprod[t_val])
+        else:
+            alpha_bar_t = max(0.01, 1.0 - float(t_val) / 1000.0)
+        sigma_t = float(np.sqrt(max(1.0 - alpha_bar_t, 1e-8)))
+        try:
+            with torch.no_grad():
+                base_score = -_score_fn(x_t, t_val) / sigma_t
+                base_norm = torch.norm(base_score).item()
+                if base_norm < 1e-10:
+                    continue
+                for _ in range(n_probes):
+                    v = torch.randn_like(x_t)
+                    v = v / torch.norm(v) * delta
+                    perturbed_score = -_score_fn(x_t + v, t_val) / sigma_t
+                    score_diff = torch.norm(perturbed_score - base_score).item()
+                    ratios.append(score_diff / (delta * base_norm + 1e-10))
+        except Exception:
+            continue
+
+    if not ratios:
+        return 0.0
+    median_ratio = float(np.median(ratios))
+    return float(max(0.0, 1.0 / (1.0 + median_ratio)))
+
+
+def compute_a3_auroc_persistence(mem_results, unmem_results, metric_key='ndn_mean'):
+    """A3 (cross-sample): AUROC stability of a sharpness metric across timesteps.
+
+    This directly tests the A3 claim: that the *cross-sample ranking*
+    (memorized vs. non-memorized) is preserved across timesteps.
+    Computed post-hoc from batched per-prompt results.
+    """
+    from sklearn.metrics import roc_auc_score
+
+    all_timesteps = set()
+    for r in mem_results + unmem_results:
+        hbt = r.get('hessian_by_timestep', {})
+        all_timesteps.update(hbt.keys())
+    if len(all_timesteps) < 3:
+        return 0.0
+
+    timesteps = sorted(all_timesteps, reverse=True)
+    aurocs = []
+    for t in timesteps:
+        scores, labels = [], []
+        for r in mem_results:
+            mags = r.get('hessian_by_timestep', {}).get(t, [])
+            if mags:
+                scores.append(float(np.sum(np.abs(mags[:50]))))
+                labels.append(1)
+        for r in unmem_results:
+            mags = r.get('hessian_by_timestep', {}).get(t, [])
+            if mags:
+                scores.append(float(np.sum(np.abs(mags[:50]))))
+                labels.append(0)
+        if len(set(labels)) < 2 or len(labels) < 4:
+            continue
+        try:
+            aurocs.append(roc_auc_score(labels, scores))
+        except ValueError:
+            continue
+
+    if len(aurocs) < 3:
+        return 0.0
+    try:
+        corr, _ = spearmanr(range(len(aurocs)), aurocs)
+        return float(abs(corr)) if not np.isnan(corr) else 0.0
+    except Exception:
+        return 0.0
 
 
 # =====================================================================================
@@ -899,6 +1046,8 @@ def compute_all_geometric_metrics(intermediates, cond_context, uncond_context,
         intermediates, model, cond_context, scheduler, plucker)
     results['a1_score_matching_consistency_fd'] = compute_score_matching_fd(
         intermediates, model, cond_context, scheduler, plucker)
+    results['a1_score_local_lipschitz'] = compute_score_local_lipschitz(
+        intermediates, model, cond_context, scheduler, plucker)
 
     results['a2_score_hessian_proportionality'] = compute_hessian_score_proportionality_fixed(
         intermediates, hessian_viz, scheduler)
@@ -914,7 +1063,9 @@ def compute_all_geometric_metrics(intermediates, cond_context, uncond_context,
         intermediates['text_noise'], intermediates['uncond_noise']))
 
     results['a5_prior_deviation_pval'] = compute_prior_structure_deviation(
-        intermediates.get('initial_latents'))
+        intermediates.get('initial_latents'),
+        final_latents=intermediates['x_inter'][-1] if intermediates.get('x_inter') else None
+    )
 
     results['a7_score_explosion_indicator'] = compute_score_explosion_indicator(
         intermediates['uncond_noise'], intermediates['text_noise'])
@@ -944,19 +1095,20 @@ def print_results_table(mem_results, unmem_results, model_name="DiffSplat"):
         return (np.mean(vals), np.std(vals)) if vals else (0.0, 0.0)
 
     tests = [
-        ('(A1) Score Matching Consistency',    'a1_score_matching_consistency',       '↓'),
-        ('(A1) Score Matching Consistency FD', 'a1_score_matching_consistency_fd',    '↓'),
-        ('(A1) Magnitude Bias',               'a1_magnitude_bias',                   '↑'),
-        ('(A1) Prediction Consistency',        'a1_prediction_consistency',           '↑'),
-        ('(A2) Score-Hessian Proportionality', 'a2_score_hessian_proportionality',   '↓'),
-        ('(A2) Score-Hessian Prop. FD',        'a2_score_hessian_proportionality_fd','↓'),
-        ('(A3) Rank Persistence',              'a3_sharpness_rank_persistence',       '↓'),
-        ('(A3) Rank Persistence FD',           'a3_sharpness_rank_persistence_fd',    '↓'),
-        ('(A3) Hotspot Jaccard',               'a3_hotspot_jaccard',                  '↑'),
-        ('(A3) Temporal Autocorr',             'a3_temporal_autocorr',                '↑'),
-        ('(A4) Eigenspace Alignment',          'a4_eigvec_align',                     '↓'),
-        ('(A5) Gaussian Prior p-value',        'a5_prior_deviation_pval',             '↓'),
-        ('(A7) Score Explosion',               'a7_score_explosion_indicator',        '↑'),
+        ('(A1) Score Matching (A1∧A2)',        'a1_score_matching_consistency',       '↑'),
+        ('(A1) Score Matching FD (A1∧A2)',     'a1_score_matching_consistency_fd',    '↑'),
+        ('(A1) Local Lipschitz (pure A1)',      'a1_score_local_lipschitz',            '↑'),
+        ('(A1) Magnitude Bias',               'a1_magnitude_bias',                   '↓'),
+        ('(A1) Prediction Consistency',        'a1_prediction_consistency',           '↓'),
+        ('(A2) Score-Hessian Proportionality', 'a2_score_hessian_proportionality',   '↑'),
+        ('(A2) Score-Hessian Prop. FD',        'a2_score_hessian_proportionality_fd','↑'),
+        ('(A3) Rank Persistence (within)',     'a3_sharpness_rank_persistence',       '↑'),
+        ('(A3) Rank Persistence FD (within)',  'a3_sharpness_rank_persistence_fd',    '↑'),
+        ('(A3) Hotspot Jaccard (within)',      'a3_hotspot_jaccard',                  '↑'),
+        ('(A3) Temporal Autocorr (within)',    'a3_temporal_autocorr',                '↑'),
+        ('(A4) Eigenspace Alignment',          'a4_eigvec_align',                     '↑'),
+        ('(A5) Gaussian Prior p-value',        'a5_prior_deviation_pval',             '↑'),
+        ('(A6) Score Explosion',               'a7_score_explosion_indicator',        '↓'),
         ('NDN Mean',                           'noise_diff_norm_mean',                '↑'),
         ('Score Sensitivity',                  'score_sensitivity_to_input_perturbations', '↑'),
     ]
@@ -1040,6 +1192,11 @@ def main():
     unmem_results = all_results.get('unmemorized', [])
 
     print_results_table(mem_results, unmem_results, model_name="DiffSplat")
+
+    # Cross-sample A3 test (requires both categories)
+    if mem_results and unmem_results:
+        a3_cross = compute_a3_auroc_persistence(mem_results, unmem_results)
+        print(f"\n(A3) Cross-sample AUROC persistence: {a3_cross:.3f}")
 
 
 if __name__ == "__main__":

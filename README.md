@@ -1,11 +1,19 @@
 ### Memorization Evaluation
 ```
+# grab Cap3D csv
 wget https://huggingface.co/datasets/tiange/Cap3D/resolve/main/Cap3D_automated_Objaverse_full.csv
+
+# point runner script to downloaded Cap3D csv
 python run_baseline.py
+
+# ask a judge to relabel jsons
+python memorization/evaluation/judge_objaverse.py
+
+# get metric auroc
 python memorization/evaluation/analysis.py --groups cap3d laion_memorized
 ```
 
-### Download Pretrained Models
+### Download Pretrained Models (Original DiffSplat Authors' Instructions) 
 
 Note that:
 - Pretrained weights will download from HuggingFace and stored in `./out`.
