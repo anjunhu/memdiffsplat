@@ -195,9 +195,9 @@ class HessianMetric(BaseMetric):
                 perturbation = delta * s_delta / s_delta_norm
                 latents_perturbed = latents + perturbation
 
-                # Approximate Hessian-vector products separately
-                h_s_cond = get_cond_score(latents_perturbed, timestep_tensor) - get_cond_score(latents, timestep_tensor)
-                h_s_uncond = get_uncond_score(latents_perturbed, timestep_tensor) - get_uncond_score(latents, timestep_tensor)
+                # Approximate Hessian-vector products separately (normalized by delta)
+                h_s_cond = (get_cond_score(latents_perturbed, timestep_tensor) - get_cond_score(latents, timestep_tensor)) / delta
+                h_s_uncond = (get_uncond_score(latents_perturbed, timestep_tensor) - get_uncond_score(latents, timestep_tensor)) / delta
                 
                 # Get per-pixel magnitudes for visualization
                 # Handle different tensor shapes gracefully

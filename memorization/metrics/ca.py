@@ -133,8 +133,8 @@ class XAttnEntropyMetric(BaseMetric):
             
             # Calculate entropy for this module
             avg_per_token = cond_attn.mean(dim=(0, 1))
-            dist = avg_per_token / (avg_per_token.sum() + 1e-9)
-            entropy = -torch.sum(dist * torch.log(dist + 1e-9)).item()
+            # Direct entropy on averaged attention (matching original MemAttn)
+            entropy = -torch.sum(avg_per_token * torch.log(avg_per_token + 1e-9)).item()
             cae_e.append(entropy)
         
         # Pad to length 16 if needed
@@ -199,16 +199,16 @@ class XAttnEntropyMetric(BaseMetric):
                 
                 # Calculate entropy on all tokens (first term)
                 avg_per_token = cond_attn.mean(dim=(0, 1))
-                dist = avg_per_token / (avg_per_token.sum() + 1e-9)
-                entropy_all = -torch.sum(dist * torch.log(dist + 1e-9)).item()
+                # Direct entropy on averaged attention (matching original MemAttn)
+                entropy_all = -torch.sum(avg_per_token * torch.log(avg_per_token + 1e-9)).item()
                 step_entropies.append(entropy_all)
                 
                 # Calculate entropy on summary tokens only (second term)
                 summary_tokens = avg_per_token[prompt_length:]
                 
                 if summary_tokens.numel() > 0:
-                    dist_summary = summary_tokens / (summary_tokens.sum() + 1e-9)
-                    entropy_summary = -torch.sum(dist_summary * torch.log(dist_summary + 1e-9)).item()
+                    # Direct entropy on summary tokens (matching original MemAttn)
+                    entropy_summary = -torch.sum(summary_tokens * torch.log(summary_tokens + 1e-9)).item()
                     step_summary_entropies.append(entropy_summary)
             
             # Average across layers for this timestep
@@ -232,8 +232,8 @@ class XAttnEntropyMetric(BaseMetric):
             summary_tokens = avg_per_token[prompt_length:]
             
             if summary_tokens.numel() > 0:
-                dist_summary = summary_tokens / (summary_tokens.sum() + 1e-9)
-                entropy_summary = -torch.sum(dist_summary * torch.log(dist_summary + 1e-9)).item()
+                # Direct entropy on summary tokens (matching original MemAttn)
+                entropy_summary = -torch.sum(summary_tokens * torch.log(summary_tokens + 1e-9)).item()
                 first_summary_entropies.append(entropy_summary)
         
         summary_entropy_first = None
@@ -251,7 +251,9 @@ class XAttnEntropyMetric(BaseMetric):
         # Second term: average |E_summary_t - E_summary_T|
         term2 = 0.0
         if all_summary_entropies and summary_entropy_first is not None:
-            deltas = [abs(e - summary_entropy_first) for e in all_summary_entropies]
+            # Signed delta matching original MemAttn detect.py:
+            # padding_entropy[step_id].mean(0) - padding_entropy[0]
+            deltas = [e - summary_entropy_first for e in all_summary_entropies]
             term2 = sum(deltas) / len(deltas)
         
         cae_d = term1 + term2
