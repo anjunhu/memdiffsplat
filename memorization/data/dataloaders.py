@@ -593,13 +593,13 @@ if __name__ == "__main__":
     
     # Test LaionMemorizedDataset with CSV
     try:
-        dataset = LaionMemorizedDataset('./data/nemo-prompts/memorized_laion_prompts.csv', max_prompts_per_cluster=5, source_type='csv')
+        dataset = LaionMemorizedDataset('./data/cogvideo-laion-prompts/memorized_laion_prompts.csv', max_prompts_per_cluster=5, source_type='csv')
         print(f"Memorized dataset size: {len(dataset)}")
         if len(dataset) > 0:
             print(f"First memorized item: {dataset[0]}")
         
         # Test LaionUnmemorizedDataset with CSV
-        unmemorized_dataset = LaionUnmemorizedDataset('./data/nemo-prompts/unmemorized_laion_prompts.csv', max_prompts_per_cluster=5, source_type='csv')
+        unmemorized_dataset = LaionUnmemorizedDataset('./data/cogvideo-laion-prompts/unmemorized_laion_prompts.csv', max_prompts_per_cluster=5, source_type='csv')
         print(f"Unmemorized dataset size: {len(unmemorized_dataset)}")
         if len(unmemorized_dataset) > 0:
             print(f"First unmemorized item: {unmemorized_dataset[0]}")
@@ -632,7 +632,7 @@ if __name__ == "__main__":
             'max_clusters': 2
         },
         'laion_memorized': {
-            'path': './data/nemo-prompts/memorized_laion_prompts.csv',
+            'path': './data/cogvideo-laion-prompts/memorized_laion_prompts.csv',
             'max_prompts_per_cluster': 2,
             'max_clusters': 2,
             'source_type': 'csv'
