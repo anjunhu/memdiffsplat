@@ -640,6 +640,20 @@ def main(cfg):
                     del generated_intermediates
                 cleanup_memory()
 
+            # Periodically purge cached attention map files from disk
+            purge_every = getattr(cfg, 'attn_cache_purge_every', 50)
+            if (batch_idx + 1) % purge_every == 0:
+                attn_cache_dir = os.path.join(output_base_dir, "attention_maps")
+                if os.path.isdir(attn_cache_dir):
+                    import glob
+                    files = glob.glob(os.path.join(attn_cache_dir, "*.pt"))
+                    for f in files:
+                        try:
+                            os.remove(f)
+                        except OSError:
+                            pass
+                    logger.info(f"[attn cache] Purged {len(files)} files from {attn_cache_dir} after prompt {batch_idx + 1}")
+
     logger.info(f"Total evaluation time: {(time.time() - script_start_time) / 60:.2f} minutes.")
     
     if cfg.use_wandb:
@@ -694,5 +708,6 @@ if __name__ == "__main__":
     cfg.output_folder = 'output'
     cfg.num_inference_steps = 20
     cfg.guidance_scale = 7.5
+    cfg.attn_cache_purge_every = getattr(cfg, 'attn_cache_purge_every', 50)  # purge every N prompts
 
     main(cfg)

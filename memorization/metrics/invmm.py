@@ -92,7 +92,17 @@ class InvMMMetric(BaseMetric):
         x_t = sqrt_ab * x_start.expand_as(noise) + sqrt_1mab * noise
         with torch.no_grad():
             model_dtype = next(unet.parameters()).dtype
-            pred_noise = unet(x_t.to(model_dtype), t, encoder_hidden_states=cond.to(model_dtype)).sample
+            x_in = x_t.to(model_dtype)
+            # DiffSplat UNet conv_in expects more channels than the raw latent
+            # (e.g. 10 = 4 latent + 6 plucker). Pad with zeros for missing channels.
+            expected_in = unet.config.in_channels
+            if x_in.shape[1] < expected_in:
+                pad = torch.zeros(x_in.shape[0], expected_in - x_in.shape[1],
+                                  *x_in.shape[2:], dtype=x_in.dtype, device=x_in.device)
+                x_in = torch.cat([x_in, pad], dim=1)
+            pred_noise = unet(x_in, t, encoder_hidden_states=cond.to(model_dtype)).sample
+            # Trim output back to latent channels if UNet outputs extra channels
+            pred_noise = pred_noise[:, :x_t.shape[1]]
         pred_x0 = (x_t - sqrt_1mab * pred_noise.float()) / sqrt_ab.clamp(min=1e-8)
         return F.mse_loss(pred_x0, x_start.expand_as(pred_x0), reduction="none").mean(dim=list(range(1, pred_x0.dim()))).mean()
 
