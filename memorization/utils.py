@@ -4,6 +4,13 @@ import objaverse
 import pandas as pd
 from typing import List, Dict
 
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # diffsplat-memeval/
+_PROMPTS_ROOT = os.path.join(_REPO_ROOT, "data")                          # diffsplat-memeval/data/
+
+def resolve_data_path(rel_path: str) -> str:
+    """Resolve a data path to local data or prompts path"""
+    return os.path.join(_PROMPTS_ROOT, rel_path)
+
 
 def uids_to_prompts(uids: List[str]) -> List[str]:
     """Converts a list of unique identifiers (uids) to tag-concat prompts based on their annotations."""

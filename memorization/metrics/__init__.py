@@ -5,3 +5,4 @@ from .be import BrightEndingMetric
 from .ca import XAttnEntropyMetric
 from .invmm import InvMMMetric
 from .plaplace import PLaplaceMetric
+from .anisotropy import AnisotropyMetric

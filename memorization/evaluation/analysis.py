@@ -372,7 +372,7 @@ def load_all_results_to_dataframe(target_dirs: list) -> pd.DataFrame:
             # Determine the memorized flag
             if is_cross_seed:
                 prompt_id = get_prompt_identifier(f_path)
-                memorized_flag = final_prompt_status.get(prompt_id, None)
+                memorized_flag = final_prompt_status.get(prompt_id) or data.get('memorized')
             else:
                 # Check both top-level and nested under 'metrics'
                 memorized_flag = data.get('memorized')

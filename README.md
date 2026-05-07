@@ -11,6 +11,11 @@ python memorization/evaluation/judge_objaverse.py
 
 # get metric auroc
 python memorization/evaluation/analysis.py --groups cap3d laion_memorized
+python memorization/evaluation/analysis.py --groups cap3d --groups nemo --label_by directory --metric all
+  
+
+# get metric auroc
+python compare_metrics.py output/cap3d output/nemo --csv results.csv
 ```
 
 ### Download Pretrained Models (Original DiffSplat Authors' Instructions) 

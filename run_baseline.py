@@ -17,7 +17,8 @@ from PIL import Image
 import numpy as np
 
 # --- Path Setup ---
-sys.path.append(os.path.join(os.path.dirname(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
 
 # --- DiffSplat & Diffusers Imports ---
 from extensions.diffusers_diffsplat import UNetMV2DConditionModel, StableMVDiffusionPipeline, MVControlNetModel, StableMVDiffusionControlNetPipeline
@@ -36,10 +37,11 @@ from memorization.evaluation.evaluator import DiffSplatEvaluator, save_run_outpu
 from memorization.metrics import (
     NoiseDiffNormMetric, HessianMetric,
     DiversityMetric, BrightEndingMetric, XAttnEntropyMetric,
-    InvMMMetric, PLaplaceMetric
+    InvMMMetric, PLaplaceMetric, AnisotropyMetric,
 )
 # --- CORRECTED IMPORTS ---
 from memorization.controller import AttentionStore
+from memorization.utils import resolve_data_path
 
 # --- Logging Setup ---
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -306,56 +308,56 @@ def main(cfg):
         #     'source_type': 'csv'
         # },
         'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
             'concept_key': 'teddy_bear',
             'max_prompts_per_cluster': 4,
             'max_clusters': 20
         },
         'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
             'concept_key': 'fazbear_',
             'max_prompts_per_cluster': 4,
             'max_clusters': 20
         },
         'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
             'concept_key': "backpack",
             'max_prompts_per_cluster': 4,
             'max_clusters': 20,
         },
         'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
             'concept_key': "kirby_",
             'max_prompts_per_cluster': 4,
             'max_clusters': 20,
         },
         'cap3d': {
-            'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+            'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
             'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
             'concept_key': "pokemon_",
             'max_prompts_per_cluster': 4,
             'max_clusters': 20,
         },
         # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+        #     'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "_",
         #     'max_prompts_per_cluster': 4,
         #     'max_clusters': 20,
         # },
         # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+        #     'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "sonic_",
         #     'max_prompts_per_cluster': 4,
         #     'max_clusters': 20,
         # },
         # 'cap3d': {
-        #     'clusters_json_path': 'data/objaverse-dupes/aggregated_clusters.json',
+        #     'clusters_json_path': resolve_data_path('objaverse-dupes/aggregated_clusters.json'),
         #     'captions_csv_path': 'data/objaverse-dupes/Cap3D_automated_Objaverse_full.csv',
         #     'concept_key': "avocado",
         #     'max_prompts_per_cluster': 4,
@@ -387,6 +389,7 @@ def main(cfg):
         HessianMetric(),
         InvMMMetric(),
         PLaplaceMetric(),
+        AnisotropyMetric(),
     ]
     
     if cfg.get('include_slow_hessian', False):
