@@ -19,17 +19,23 @@ from memorization.metrics import (
 
 
 def default_datasets():
-    return [
-    #     {"name": "laion_memorized",
-    #      "path": resolve_data_path("mvdream-laion-prompts/inherited_laion_prompts.csv"),
-    #      "is_memorized": True},
-        {"name": "objaverse_backpack", "type": "json",
-         "path": resolve_data_path("objaverse-dupes/aggregated_clusters.json"),
-         "concept_key": "backpack", "is_memorized": False},
-        {"name": "objaverse_fazbear", "type": "json",
-         "path": resolve_data_path("objaverse-dupes/aggregated_clusters.json"),
-         "concept_key": "fazbear_", "is_memorized": False},
-    ]
+    import json as _json
+    v2_path = resolve_data_path("objaverse-dupes/aggregated_clusters_v2.json")
+    try:
+        concepts = _json.load(open(v2_path))
+        return [
+            {"name": f"objaverse_{concept}", "type": "json",
+             "path": v2_path, "concept_key": concept, "is_memorized": True}
+            for concept in sorted(concepts.keys())
+            if sum(len(uids) for uids in concepts[concept].values()) >= 4
+        ]
+    except Exception as e:
+        print(f"Warning: could not load v2 clusters ({e}), falling back to defaults")
+        return [
+            {"name": "objaverse_backpack", "type": "json",
+             "path": resolve_data_path("objaverse-dupes/aggregated_clusters.json"),
+             "concept_key": "backpack", "is_memorized": True},
+        ]
 
 
 def default_metrics(device='cuda'):

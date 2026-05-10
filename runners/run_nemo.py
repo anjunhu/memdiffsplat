@@ -64,6 +64,9 @@ def main(args):
                                        f"prompt_{idx:04d}_{seed:02d}_{sname}")
                 os.makedirs(out_dir, exist_ok=True)
 
+                base_filename = f"prompt_{idx:04d}_{seed:02d}_{sname}"
+                if os.path.exists(os.path.join(out_dir, f"{base_filename}_metrics.json")):
+                    continue
                 controller = AttentionStore()
                 result = evaluator.process_single_prompt_single_seed(
                     prompt=prompt, seed=seed,

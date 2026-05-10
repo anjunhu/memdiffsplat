@@ -1,4 +1,4 @@
-"""UCE Fixed-Concept runner for diffsplat-memeval."""
+"""CFG scale ablation runner for diffsplat-memeval."""
 import os, sys, argparse, json, torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -14,13 +14,7 @@ from memorization.metrics import (
     NoiseDiffNormMetric, HessianMetric, BrightEndingMetric,
     XAttnEntropyMetric, InvMMMetric, PLaplaceMetric, AnisotropyMetric, DiversityMetric,
 )
-from memorization.editing.model_adapter import DiffSplatPipelineAdapter
-from unlearning import UCEEditor
 from tqdm import tqdm
-
-EDIT_CONCEPTS = ["nudity", "violence"]
-GUIDE_CONCEPTS = ["a person", "an action scene"]
-PRESERVE_CONCEPTS = ["car", "house", "tree"]
 
 
 def main(args):
@@ -35,11 +29,8 @@ def main(args):
         XAttnEntropyMetric(), InvMMMetric(), PLaplaceMetric(), AnisotropyMetric()]
     diversity_metric = DiversityMetric(device=device)
     evaluator = DiffSplatEvaluator(pipeline, gsvae, gsrecon, per_seed_metrics, device=device)
-    adapter = DiffSplatPipelineAdapter(pipeline, image_size=opt.input_res)
-    editor = UCEEditor(adapter)
-    editor.erase_concept(edit_concepts=EDIT_CONCEPTS, guide_concepts=GUIDE_CONCEPTS,
-                         preserve_concepts=PRESERVE_CONCEPTS)
 
+    output_name = args.output_name or f"baseline_cfg{args.guidance_scale}".replace('.', '_')
 
     for dataset in default_datasets():
         for idx, row in enumerate(tqdm(load_prompts(dataset), desc=dataset['name'])):
@@ -47,29 +38,30 @@ def main(args):
             sname = safe_name(prompt)
             all_images = []
             for seed in range(4):
-                out_dir = os.path.join("output/uce_fixed", dataset['name'],
+                out_dir = os.path.join(f"output/{output_name}", dataset['name'],
                                        f"prompt_{idx:04d}_{seed:02d}_{sname}")
                 os.makedirs(out_dir, exist_ok=True)
-                gen = torch.Generator(device=device).manual_seed(seed)
+                base_filename = f"prompt_{idx:04d}_{seed:02d}_{sname}"
+                if os.path.exists(os.path.join(out_dir, f"{base_filename}_metrics.json")):
+                    continue
                 base_filename = f"prompt_{idx:04d}_{seed:02d}_{sname}"
                 if os.path.exists(os.path.join(out_dir, f"{base_filename}_metrics.json")):
                     continue
                 controller = AttentionStore()
                 result = evaluator.process_single_prompt_single_seed(
                     prompt=prompt, seed=seed,
-                    num_inference_steps=20, guidance_scale=7.5,
+                    num_inference_steps=20, guidance_scale=args.guidance_scale,
                     camera_params=camera_params, render_params=render_params,
                     unlearning_artifacts={"controller": controller},
                 )
                 if "error" not in result:
                     result["metrics"]["memorized"] = dataset["is_memorized"]
-                    base_filename = f"prompt_{idx:04d}_{seed:02d}_{sname}"
-                    save_run_outputs(result, out_dir, base_filename)
+                    save_run_outputs(result, out_dir, f"prompt_{idx:04d}_{seed:02d}_{sname}")
                     all_images.extend(multiview_tensor_to_images(result["rendered_images"]))
                 torch.cuda.empty_cache()
 
             div = diversity_metric.measure(images=all_images, intermediates_list=[])
-            cross = os.path.join("output/uce_fixed", dataset['name'],
+            cross = os.path.join(f"output/{output_name}", dataset['name'],
                                  f"prompt_{idx:04d}_{sname}_cross_seed.json")
             os.makedirs(os.path.dirname(cross), exist_ok=True)
             with open(cross, 'w') as f:
@@ -79,6 +71,8 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/gsdiff_sd15.yaml", help="Path to the evaluation config file.")
+    parser.add_argument("--config", type=str, default="configs/gsdiff_sd15.yaml")
+    parser.add_argument("--guidance-scale", type=float, required=True)
+    parser.add_argument("--output-name", type=str, default=None)
     args = parser.parse_args()
     main(args)
