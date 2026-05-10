@@ -109,7 +109,8 @@ class DiffSplatEvaluator:
             # Generate latent Gaussians with attention controller
             pipeline_output = self.pipeline(
                 None,  # No input image for text-to-3D
-                prompt=prompt, 
+                prompt=prompt if camera_params.get('prompt_embeds') is None else None,
+                prompt_embeds=camera_params.get('prompt_embeds'),
                 negative_prompt=camera_params.get('negative_prompt', ''),
                 num_inference_steps=num_inference_steps, 
                 guidance_scale=guidance_scale,

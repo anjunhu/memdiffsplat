@@ -25,7 +25,14 @@ BATCH_SIZE = 10
 def main(args):
     device = 'cuda'
     baseline_pipeline, gsvae, gsrecon, opt = load_pipeline(args.config, device)
-
+    camera_params = setup_camera_parameters(opt, device)
+    camera_params.update({"negative_prompt": "", "triangle_cfg_scaling": False,
+        "min_guidance_scale": 1.0, "eta": 1.0, "init_std": 0.0,
+        "init_noise_strength": 0.98, "init_bg": 0.0, "guess_mode": False, "controlnet_scale": 1.0})
+    render_params = {"height": opt.input_res, "width": opt.input_res, "opacity_threshold": 0.0}
+    per_seed_metrics = [NoiseDiffNormMetric(), HessianMetric(), BrightEndingMetric(),
+        XAttnEntropyMetric(), InvMMMetric(), PLaplaceMetric(), AnisotropyMetric()]
+    diversity_metric = DiversityMetric(device=device)
 
     for dataset in default_datasets():
         prompts_data = load_prompts(dataset)
@@ -38,6 +45,7 @@ def main(args):
             pruner = SubspacePruner(adapter, sparsity=0.0008)
             masks = pruner.find_memorization_subspace(batch_prompts)
             pruner.prune_model_weights(masks)
+            evaluator = DiffSplatEvaluator(edited_pipe, gsvae, gsrecon, per_seed_metrics, device=device)
 
             for local_idx, row in enumerate(tqdm(batch, desc=f"{dataset['name']} b{batch_start}")):
                 idx = batch_start + local_idx
@@ -48,10 +56,16 @@ def main(args):
                     out_dir = os.path.join("output/subspace_prune", dataset['name'],
                                            f"prompt_{idx:04d}_{seed:02d}_{sname}")
                     os.makedirs(out_dir, exist_ok=True)
-                    gen = torch.Generator(device=device).manual_seed(seed)
-                    result = edited_pipe(prompt, num_inference_steps=20, guidance_scale=7.5,
-                                        generator=gen, output_type='pil')
-                    images.append(result.images[0])
+                    controller = AttentionStore()
+                    result = evaluator.process_single_prompt_single_seed(
+                        prompt=prompt, seed=seed, num_inference_steps=20, guidance_scale=7.5,
+                        camera_params=camera_params, render_params=render_params,
+                        unlearning_artifacts={"controller": controller},
+                    )
+                    if "error" not in result:
+                        result["metrics"]["memorized"] = dataset["is_memorized"]
+                        save_run_outputs(result, out_dir, f"prompt_{idx:04d}_{seed:02d}_{sname}")
+                        all_images.extend(multiview_tensor_to_images(result["rendered_images"]))
                     torch.cuda.empty_cache()
 
                 div = diversity_metric.measure(images=all_images, intermediates_list=[])
@@ -59,15 +73,15 @@ def main(args):
                                      f"prompt_{idx:04d}_{sname}_cross_seed.json")
                 os.makedirs(os.path.dirname(cross), exist_ok=True)
                 with open(cross, 'w') as f:
-                    json.dump({"prompt": prompt, "memorized": dataset['is_memorized'],
+                    json.dump({"prompt": prompt, "memorized": dataset["is_memorized"],
                                diversity_metric.name: div}, f, indent=2)
 
-            del edited_pipe, pruner, adapter
+            del edited_pipe, pruner, adapter, evaluator
             torch.cuda.empty_cache()
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--config", type=str, default="configs/gsdiff_sd15.yaml", help="Path to the evaluation config file.")
+    parser.add_argument("--config", type=str, default="configs/gsdiff_sd15.yaml")
     args = parser.parse_args()
     main(args)
